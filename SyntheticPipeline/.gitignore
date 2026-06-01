@@ -1,0 +1,6 @@
+# Ignore all generated assets, pointclouds, and scenes
+output/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
