@@ -26,3 +26,8 @@ cloth_nodes.txt
 /pickle/
 /images/
 *.log
+
+ecomodel_log.log
+.vscode/
+test_mangrove.json
+*.obj
