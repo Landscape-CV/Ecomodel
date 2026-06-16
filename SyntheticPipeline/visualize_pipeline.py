@@ -50,6 +50,7 @@ def main():
     parser = argparse.ArgumentParser(description="Visualize Point Cloud and GT Cylinders together")
     parser.add_argument("--laz_path", type=str, default="SyntheticPipeline/output/pointclouds/demo_forest_scan.laz")
     parser.add_argument("--gt_path", type=str, default="SyntheticPipeline/output/scenes/demo_forest_gt.json")
+    parser.add_argument("--gt_mesh_path", type=str, default=None, help="Path to ground truth mesh (e.g. .ply) to render instead of JSON cylinders")
     parser.add_argument("--downsample", type=int, default=50, help="Keep 1 out of N points to make the cloud translucent")
     args = parser.parse_args()
 
@@ -80,33 +81,46 @@ def main():
     except FileNotFoundError:
         print(f"Warning: Could not find point cloud {args.laz_path}")
 
-    # 2. Load GT JSON
-    print(f"Loading Ground Truth: {args.gt_path}")
-    try:
-        with open(args.gt_path, 'r') as f:
-            data = json.load(f)
+    # 2. Load GT
+    if args.gt_mesh_path:
+        print(f"Loading Ground Truth Mesh: {args.gt_mesh_path}")
+        try:
+            gt_mesh = o3d.io.read_triangle_mesh(args.gt_mesh_path)
+            if not gt_mesh.is_empty():
+                gt_mesh.compute_vertex_normals()
+                gt_mesh.paint_uniform_color([1.0, 0.2, 0.2]) # Paint GT mesh red
+                geometries.append(gt_mesh)
+            else:
+                print(f"Warning: GT mesh {args.gt_mesh_path} is empty or failed to load.")
+        except Exception as e:
+            print(f"Warning: Could not load GT mesh: {e}")
+    else:
+        print(f"Loading Ground Truth JSON: {args.gt_path}")
+        try:
+            with open(args.gt_path, 'r') as f:
+                data = json.load(f)
 
-        # Dictionary to keep track of colors per tree instance
-        tree_colors = {}
-        
-        print(f"Generating cylinder meshes for {len(data)} GT segments...")
-        for cyl_data in data:
-            tree_id = cyl_data["tree_instance_id"]
-            if tree_id not in tree_colors:
-                # Generate a distinct bright color using golden ratio for hue distribution
-                h = (tree_id * 0.618033988749895) % 1.0
-                r, g, b = colorsys.hls_to_rgb(h, 0.6, 0.9) # Bright pastel colors
-                tree_colors[tree_id] = [r, g, b]
-                
-            start = np.array(cyl_data["start"])
-            end = np.array(cyl_data["end"])
-            radius = cyl_data["radius"]
+            # Dictionary to keep track of colors per tree instance
+            tree_colors = {}
             
-            cyl_mesh = create_cylinder_mesh(start, end, radius, tree_colors[tree_id])
-            if cyl_mesh is not None:
-                geometries.append(cyl_mesh)
-    except FileNotFoundError:
-        print(f"Warning: Could not find GT {args.gt_path}")
+            print(f"Generating cylinder meshes for {len(data)} GT segments...")
+            for cyl_data in data:
+                tree_id = cyl_data["tree_instance_id"]
+                if tree_id not in tree_colors:
+                    # Generate a distinct bright color using golden ratio for hue distribution
+                    h = (tree_id * 0.618033988749895) % 1.0
+                    r, g, b = colorsys.hls_to_rgb(h, 0.6, 0.9) # Bright pastel colors
+                    tree_colors[tree_id] = [r, g, b]
+                    
+                start = np.array(cyl_data["start"])
+                end = np.array(cyl_data["end"])
+                radius = cyl_data["radius"]
+                
+                cyl_mesh = create_cylinder_mesh(start, end, radius, tree_colors[tree_id])
+                if cyl_mesh is not None:
+                    geometries.append(cyl_mesh)
+        except FileNotFoundError:
+            print(f"Warning: Could not find GT JSON {args.gt_path}")
 
     if not geometries:
         print("No geometries to display. Exiting.")
