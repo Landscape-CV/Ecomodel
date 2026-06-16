@@ -10,7 +10,7 @@ Write-Host "=== 1. Generating Assets ==="
 .\.venv\Scripts\python.exe SyntheticPipeline\asset_manager.py --num_trees 5 --blender_path "D:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --blend_file "D:\pointclouds\Mangrove Gen.blend" --workers 2
 
 Write-Host "=== 2. Assembling Forest Scene ==="
-.\.venv\Scripts\python.exe SyntheticPipeline\forest_assembler.py --scene_name demo_forest --num_trees 5 --area_size 200.0 --wind_x 0.2
+.\.venv\Scripts\python.exe SyntheticPipeline\forest_assembler.py --scene_name demo_forest --num_trees 5 --area_size 200.0
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Pipeline aborted during Forest Assembly (Exit Code: $LASTEXITCODE). Check the logs for MemoryError."
     exit $LASTEXITCODE

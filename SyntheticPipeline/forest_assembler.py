@@ -81,15 +81,25 @@ class ForestAssembler:
             scale = random.uniform(0.7, 1.5)
             scale_transform = trimesh.transformations.scale_matrix(scale)
             
-            # Combine transformations: Scale -> Yaw -> Wind Tilt -> Translation
-            transform = np.eye(4)
-            transform[:3, 3] = [x, y, z]
-            transform = transform @ wind_transform @ yaw_transform @ scale_transform
+            # Combine base transformations: Scale -> Yaw -> Wind Tilt
+            rot_scale_transform = wind_transform @ yaw_transform @ scale_transform
             
             # 2. Process Mesh
             tree_mesh = trimesh.load(str(obj_path))
-            tree_mesh.apply_transform(transform)
+            tree_mesh.apply_transform(rot_scale_transform)
+            
+            # Mathematically ground the tree: find the lowest vertex and offset Z so it touches 0
+            min_z = tree_mesh.bounds[0][2]
+            z_translation = -min_z
+            
+            translation_matrix = np.eye(4)
+            translation_matrix[:3, 3] = [x, y, z_translation]
+            
+            tree_mesh.apply_transform(translation_matrix)
             merged_mesh = trimesh.util.concatenate([merged_mesh, tree_mesh])
+            
+            # Full transform matrix for Ground Truth calculation
+            transform = translation_matrix @ rot_scale_transform
             
             # 3. Process GT Skeleton
             with open(json_path, 'r') as f:
@@ -142,8 +152,8 @@ if __name__ == "__main__":
     parser.add_argument("--scene_name", type=str, default="forest_001")
     parser.add_argument("--num_trees", type=int, default=10)
     parser.add_argument("--area_size", type=float, default=200.0)
-    parser.add_argument("--wind_x", type=float, default=0.1)
-    parser.add_argument("--wind_y", type=float, default=0.1)
+    parser.add_argument("--wind_x", type=float, default=0.0)
+    parser.add_argument("--wind_y", type=float, default=0.0)
     
     args = parser.parse_args()
     
