@@ -274,7 +274,7 @@ def generate_from_geometry_nodes(seed, out_obj, out_json):
         bmesh.update_edit_mesh(obj.data)
         bpy.ops.object.mode_set(mode='OBJECT')
 
-    # Export the compressed mesh
+    # Export the full mesh (with leaves)
     bpy.ops.wm.obj_export(
         filepath=out_obj,
         export_selected_objects=True,
@@ -285,11 +285,37 @@ def generate_from_geometry_nodes(seed, out_obj, out_json):
     )
     print(f"Successfully generated Geometry Nodes tree {out_obj}")
     
+    # --------------------------------------------------------------------------------
+    # 4. EXPORT LEAFLESS MESH FOR GROUND TRUTH
+    # --------------------------------------------------------------------------------
+    bpy.ops.object.mode_set(mode='EDIT')
+    bm = bmesh.from_edit_mesh(obj.data)
+    
+    # Material 0 is Bark. Delete faces that are not Material 0
+    faces_to_delete = [f for f in bm.faces if f.material_index != 0]
+    if faces_to_delete:
+        bmesh.ops.delete(bm, geom=faces_to_delete, context='FACES')
+        print(f"Removed {len(faces_to_delete)} leaf/twig faces for GT mesh.")
+        
+    bmesh.update_edit_mesh(obj.data)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # Export the leafless mesh
+    out_obj_noleaf = out_obj.replace(".obj", "_noleaf.obj")
+    bpy.ops.wm.obj_export(
+        filepath=out_obj_noleaf,
+        export_selected_objects=True,
+        export_materials=False,
+        export_triangulated_mesh=True,
+        forward_axis='Y',
+        up_axis='Z'
+    )
+    print(f"Successfully generated Leafless GT tree {out_obj_noleaf}")
+    
     # Note: Extracting analytical skeletons from a closed Geometry Nodes setup 
     # requires the GN tree to explicitly output curves or attribute data.
     with open(out_json, 'w') as f:
         json.dump([], f, indent=4)
-        print("Warning: GT skeleton extraction from arbitrary GN trees requires node-level curve outputs.")
 
 if __name__ == "__main__":
     # Handle arguments passed via Blender command line (arguments after '--')
