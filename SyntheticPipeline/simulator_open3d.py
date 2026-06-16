@@ -7,6 +7,11 @@ try:
 except ImportError:
     print("Warning: open3d is not installed. Please 'pip install open3d' to run Open3DSimulator.")
 
+try:
+    import laspy
+except ImportError:
+    print("Warning: laspy is not installed. Please 'pip install laspy lazrs' for .laz support.")
+
 from simulator_base import BaseLiDARSimulator
 
 class Open3DSimulator(BaseLiDARSimulator):
@@ -125,28 +130,23 @@ class Open3DSimulator(BaseLiDARSimulator):
             
         merged_points = np.vstack(all_points)
         
-        # Downsample to simulate realistic point density if needed
-        pcd = o3d.geometry.PointCloud()
-        
         coords = merged_points[:, :3]
         intensities = merged_points[:, 3]
         
-        # Map intensity to grayscale colors so .ply format naturally retains it
-        colors = np.zeros((len(coords), 3))
-        colors[:, 0] = intensities
-        colors[:, 1] = intensities
-        colors[:, 2] = intensities
+        # Native LAZ Export using laspy
+        header = laspy.LasHeader(point_format=1, version="1.2")
+        las = laspy.LasData(header)
         
-        pcd.points = o3d.utility.Vector3dVector(coords)
-        pcd.colors = o3d.utility.Vector3dVector(colors)
+        las.x = coords[:, 0]
+        las.y = coords[:, 1]
+        las.z = coords[:, 2]
         
-        voxel_size = noise_params.get("voxel_downsample_size", 0.0)
-        if voxel_size > 0:
-            pcd = pcd.voxel_down_sample(voxel_size)
-            
-        out_path = self.output_dir / f"{output_filename}.ply"
-        o3d.io.write_point_cloud(str(out_path), pcd)
-        print(f"Saved simulated point cloud ({len(pcd.points)} points) to: {out_path}")
+        # Scale 0-1 float intensity back to 16-bit integer for standard LAS/LAZ format
+        las.intensity = (intensities * 65535).astype(np.uint16)
+        
+        out_path = self.output_dir / f"{output_filename}.laz"
+        las.write(str(out_path))
+        print(f"Saved simulated point cloud ({len(las.x)} points) to: {out_path}")
         return out_path
 
 if __name__ == "__main__":

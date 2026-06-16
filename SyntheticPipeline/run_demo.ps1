@@ -2,6 +2,7 @@ Write-Host "=== 0. Cleaning up old demo files ==="
 Remove-Item -Path "SyntheticPipeline\output\assets\*.obj" -Force -ErrorAction SilentlyContinue
 Remove-Item -Path "SyntheticPipeline\output\pointclouds\*.ply" -Force -ErrorAction SilentlyContinue
 Remove-Item -Path "SyntheticPipeline\output\pointclouds\*.xyz" -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "SyntheticPipeline\output\pointclouds\*.laz" -Force -ErrorAction SilentlyContinue
 Remove-Item -Path "SyntheticPipeline\output\assets\*.json" -Force -ErrorAction SilentlyContinue
 Remove-Item -Path "SyntheticPipeline\output\scenes\*" -Force -Recurse -ErrorAction SilentlyContinue
 
