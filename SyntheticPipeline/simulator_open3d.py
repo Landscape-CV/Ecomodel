@@ -25,6 +25,10 @@ class Open3DSimulator(BaseLiDARSimulator):
         
         theta_grid, phi_grid = np.meshgrid(np.radians(thetas), np.radians(phis))
         
+        # Add random jitter to break perfect concentric circle artifacts
+        theta_grid += np.random.uniform(-np.radians(resolution_theta)/2, np.radians(resolution_theta)/2, theta_grid.shape)
+        phi_grid += np.random.uniform(-np.radians(resolution_phi)/2, np.radians(resolution_phi)/2, phi_grid.shape)
+        
         # Spherical to Cartesian directions
         dx = np.sin(phi_grid) * np.cos(theta_grid)
         dy = np.sin(phi_grid) * np.sin(theta_grid)
@@ -87,17 +91,32 @@ class Open3DSimulator(BaseLiDARSimulator):
                 points += spatial_noise
                 
             # C. Wind Sway Noise
-            # Very simplistic model: add random offset to points that are higher up (leaves/thin branches)
             wind_sway_std = noise_params.get("wind_sway_std", 0.0)
             if wind_sway_std > 0:
-                # Assuming z=0 is ground. More sway at higher Z.
                 heights = points[:, 2]
                 max_height = np.max(heights) if len(heights)>0 else 1.0
                 sway_factor = np.clip(heights / max_height, 0, 1)
                 sway_noise = np.random.normal(0, wind_sway_std, points.shape) * sway_factor[:, np.newaxis]
                 points += sway_noise
                 
-            all_points.append(points)
+            # 4. Calculate Intensity based on incidence angle
+            primitive_normals = ans['primitive_normals'].numpy()[hit_mask]
+            
+            # Incidence is dot product between ray direction and surface normal.
+            # We use absolute value since rays can hit from either side of a flat leaf polygon
+            incidence_dot = np.abs(np.sum(hit_directions * primitive_normals, axis=1))
+            
+            # Simple distance decay approximation (normalized roughly for 10-20m)
+            distance_decay = np.clip((1.0 / (hit_distances ** 2)) * 100, 0, 1)
+            
+            # Leaves (chaotic normals, glancing hits) naturally get lower/noisier intensity
+            # Trunks (vertical, direct hits) get bright reflection.
+            intensities = incidence_dot * distance_decay
+            intensities = np.clip(intensities, 0, 1)
+            
+            # Combine coordinates and intensity into 4-column array
+            points_with_intensity = np.hstack([points, intensities[:, np.newaxis]])
+            all_points.append(points_with_intensity)
             
         # Merge all scan positions
         if not all_points:
@@ -108,13 +127,24 @@ class Open3DSimulator(BaseLiDARSimulator):
         
         # Downsample to simulate realistic point density if needed
         pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(merged_points)
+        
+        coords = merged_points[:, :3]
+        intensities = merged_points[:, 3]
+        
+        # Map intensity to grayscale colors so .ply format naturally retains it
+        colors = np.zeros((len(coords), 3))
+        colors[:, 0] = intensities
+        colors[:, 1] = intensities
+        colors[:, 2] = intensities
+        
+        pcd.points = o3d.utility.Vector3dVector(coords)
+        pcd.colors = o3d.utility.Vector3dVector(colors)
         
         voxel_size = noise_params.get("voxel_downsample_size", 0.0)
         if voxel_size > 0:
             pcd = pcd.voxel_down_sample(voxel_size)
             
-        out_path = self.output_dir / f"{output_filename}.xyz"
+        out_path = self.output_dir / f"{output_filename}.ply"
         o3d.io.write_point_cloud(str(out_path), pcd)
         print(f"Saved simulated point cloud ({len(pcd.points)} points) to: {out_path}")
         return out_path

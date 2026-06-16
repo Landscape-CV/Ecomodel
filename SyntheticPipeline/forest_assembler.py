@@ -71,16 +71,20 @@ class ForestAssembler:
             # 1. Random Placement
             x = random.uniform(-area_size[0]/2, area_size[0]/2)
             y = random.uniform(-area_size[1]/2, area_size[1]/2)
-            z = random.uniform(-1.5, 1.5) # Add minor elevation variation
+            z = 0.0 # Attach firmly to the ground
             
             # Random yaw rotation
             yaw = random.uniform(0, 2 * np.pi)
             yaw_transform = trimesh.transformations.rotation_matrix(yaw, [0, 0, 1])
             
-            # Combine transformations: Yaw -> Wind Tilt -> Translation
+            # Random scale for height variation
+            scale = random.uniform(0.7, 1.5)
+            scale_transform = trimesh.transformations.scale_matrix(scale)
+            
+            # Combine transformations: Scale -> Yaw -> Wind Tilt -> Translation
             transform = np.eye(4)
             transform[:3, 3] = [x, y, z]
-            transform = transform @ wind_transform @ yaw_transform
+            transform = transform @ wind_transform @ yaw_transform @ scale_transform
             
             # 2. Process Mesh
             tree_mesh = trimesh.load(str(obj_path))
@@ -103,17 +107,18 @@ class ForestAssembler:
                 end_orig = np.array(cyl["end"])
                 end_new = rot_matrix @ end_orig + translation
                 
-                # Transform Axis (only rotation)
+                # Transform Axis (only rotation, need to normalize in case of scale)
                 axis_orig = np.array(cyl["axis"])
                 axis_new = rot_matrix @ axis_orig
+                axis_new = axis_new / np.linalg.norm(axis_new)
                 
                 new_cyl = {
                     "tree_instance_id": tree_id,
                     "branch_id": cyl["branch_id"],
                     "start": start_new.tolist(),
                     "end": end_new.tolist(),
-                    "radius": cyl["radius"],
-                    "length": cyl["length"],
+                    "radius": cyl["radius"] * scale,
+                    "length": cyl["length"] * scale,
                     "axis": axis_new.tolist()
                 }
                 global_gt.append(new_cyl)
