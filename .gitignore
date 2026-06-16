@@ -31,3 +31,4 @@ ecomodel_log.log
 .vscode/
 test_mangrove.json
 *.obj
+test_assembler.log
