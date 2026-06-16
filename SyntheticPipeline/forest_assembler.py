@@ -64,7 +64,7 @@ class ForestAssembler:
             # 1. Random Placement
             x = random.uniform(-area_size[0]/2, area_size[0]/2)
             y = random.uniform(-area_size[1]/2, area_size[1]/2)
-            z = 0.0 # flat terrain for now
+            z = random.uniform(-1.5, 1.5) # Add minor elevation variation
             
             # Random yaw rotation
             yaw = random.uniform(0, 2 * np.pi)
@@ -129,7 +129,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Assemble Forest Scene from Tree Assets")
     parser.add_argument("--scene_name", type=str, default="forest_001")
     parser.add_argument("--num_trees", type=int, default=10)
-    parser.add_argument("--area_size", type=float, default=20.0)
+    parser.add_argument("--area_size", type=float, default=200.0)
     parser.add_argument("--wind_x", type=float, default=0.1)
     parser.add_argument("--wind_y", type=float, default=0.1)
     

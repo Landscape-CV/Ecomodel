@@ -1,5 +1,5 @@
 {
-    "decimate_ratio":  0.05,
+    "decimate_ratio":  0.2,
     "remove_underground":  true,
     "randomize_seed_parameters":  true,
     "parameters":  {
