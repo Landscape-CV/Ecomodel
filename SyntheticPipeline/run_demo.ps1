@@ -9,9 +9,13 @@ Write-Host "=== 1. Generating Assets ==="
 
 Write-Host "=== 2. Assembling Forest Scene ==="
 .\.venv\Scripts\python.exe SyntheticPipeline\forest_assembler.py --scene_name demo_forest --num_trees 5 --area_size 200.0 --wind_x 0.2
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Pipeline aborted during Forest Assembly (Exit Code: $LASTEXITCODE). Check the logs for MemoryError."
+    exit $LASTEXITCODE
+}
 
 Write-Host "=== 3. Simulating LiDAR Scan ==="
-.\.venv\Scripts\python.exe SyntheticPipeline\simulator_open3d.py --mesh_path "SyntheticPipeline\output\scenes\demo_forest.obj" --out_name demo_forest_scan
+.\.venv\Scripts\python.exe SyntheticPipeline\simulator_open3d.py --mesh_path "SyntheticPipeline\output\scenes\demo_forest.ply" --out_name demo_forest_scan
 
 Write-Host "=== 4. Parsing Ground Truth ==="
 .\.venv\Scripts\python.exe SyntheticPipeline\gt_parser.py --json_path "SyntheticPipeline\output\scenes\demo_forest_gt.json" --out_name demo_forest_gt

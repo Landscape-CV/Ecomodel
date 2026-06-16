@@ -4,6 +4,8 @@ import random
 import argparse
 from pathlib import Path
 import numpy as np
+import psutil
+import sys
 
 try:
     import trimesh
@@ -59,6 +61,11 @@ class ForestAssembler:
             wind_transform = np.eye(4)
 
         for tree_id in range(num_trees):
+            mem = psutil.virtual_memory()
+            if mem.percent > 90.0:
+                sys.stderr.write(f"\nCRITICAL MEMORY ERROR: System RAM usage reached {mem.percent}%. Aborting assembly to prevent OS freeze/swap thrashing!\n")
+                sys.exit(1)
+                
             obj_path, json_path = random.choice(assets)
             
             # 1. Random Placement
@@ -111,17 +118,17 @@ class ForestAssembler:
                 }
                 global_gt.append(new_cyl)
                 
-        # Export Scene
-        out_obj = self.output_dir / f"{scene_name}.obj"
+        # Export Scene as PLY (OBJ causes Blender to auto-rotate it 90 degrees on import)
+        out_ply = self.output_dir / f"{scene_name}.ply"
         out_json = self.output_dir / f"{scene_name}_gt.json"
         
-        merged_mesh.export(str(out_obj))
+        merged_mesh.export(str(out_ply))
         
         with open(out_json, 'w') as f:
             json.dump(global_gt, f, indent=4)
             
         print(f"Generated scene {scene_name} with {num_trees} trees.")
-        print(f"Mesh: {out_obj}")
+        print(f"Mesh: {out_ply}")
         print(f"GT  : {out_json}")
 
 if __name__ == "__main__":
