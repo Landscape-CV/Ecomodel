@@ -17,7 +17,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "=== 3. Simulating LiDAR Scan ==="
-.\.venv\Scripts\python.exe SyntheticPipeline\simulator_open3d.py --mesh_path "SyntheticPipeline\output\scenes\demo_forest.ply" --out_name demo_forest_scan
+.\.venv\Scripts\python.exe SyntheticPipeline\simulator_open3d.py --mesh_path "SyntheticPipeline\output\scenes\demo_forest.ply" --out_name demo_forest_scan --num_scans 5 --area_size 200.0
 
 Write-Host "=== 4. Parsing Ground Truth ==="
 .\.venv\Scripts\python.exe SyntheticPipeline\gt_parser.py --json_path "SyntheticPipeline\output\scenes\demo_forest_gt.json" --out_name demo_forest_gt
