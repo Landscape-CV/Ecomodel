@@ -2,6 +2,7 @@ import json
 import os
 import random
 import argparse
+import math
 from pathlib import Path
 import numpy as np
 import psutil
@@ -21,9 +22,12 @@ class ForestAssembler:
     def _get_tree_assets(self):
         assets = []
         for obj_path in self.asset_dir.glob("*.obj"):
+            if "_noleaf" in obj_path.name:
+                continue
             json_path = obj_path.with_suffix(".json")
+            noleaf_path = obj_path.with_name(obj_path.stem + "_noleaf.obj")
             if json_path.exists():
-                assets.append((obj_path, json_path))
+                assets.append((obj_path, json_path, noleaf_path if noleaf_path.exists() else None))
         return assets
         
     def generate_scene(self, scene_name="scene_001", area_size=(50, 50), num_trees=50, wind_vector=(0.1, 0, 0)):
@@ -35,9 +39,10 @@ class ForestAssembler:
         print(f"Found {len(assets)} tree assets. Generating forest...")
         
         merged_mesh = trimesh.Trimesh()
+        merged_noleaf_mesh = trimesh.Trimesh()
         global_gt = []
         
-        # Ground plane
+        # Ground plane (only add to visual mesh, keep GT mesh pure trees for easier parsing)
         ground = trimesh.creation.box(extents=(area_size[0], area_size[1], 0.1))
         ground.apply_translation((0, 0, -0.05))
         merged_mesh = trimesh.util.concatenate([merged_mesh, ground])
@@ -66,7 +71,7 @@ class ForestAssembler:
                 sys.stderr.write(f"\nCRITICAL MEMORY ERROR: System RAM usage reached {mem.percent}%. Aborting assembly to prevent OS freeze/swap thrashing!\n")
                 sys.exit(1)
                 
-            obj_path, json_path = random.choice(assets)
+            obj_path, json_path, noleaf_path = random.choice(assets)
             
             # 1. Random Placement
             x = random.uniform(-area_size[0]/2, area_size[0]/2)
@@ -97,6 +102,12 @@ class ForestAssembler:
             
             tree_mesh.apply_transform(translation_matrix)
             merged_mesh = trimesh.util.concatenate([merged_mesh, tree_mesh])
+            
+            if noleaf_path:
+                noleaf_mesh = trimesh.load(str(noleaf_path))
+                noleaf_mesh.apply_transform(rot_scale_transform)
+                noleaf_mesh.apply_transform(translation_matrix)
+                merged_noleaf_mesh = trimesh.util.concatenate([merged_noleaf_mesh, noleaf_mesh])
             
             # Full transform matrix for Ground Truth calculation
             transform = translation_matrix @ rot_scale_transform
@@ -135,9 +146,12 @@ class ForestAssembler:
                 
         # Export Scene as PLY (OBJ causes Blender to auto-rotate it 90 degrees on import)
         out_ply = self.output_dir / f"{scene_name}.ply"
+        out_noleaf_ply = self.output_dir / f"{scene_name}_gt_mesh.ply"
         out_json = self.output_dir / f"{scene_name}_gt.json"
         
         merged_mesh.export(str(out_ply))
+        if len(merged_noleaf_mesh.faces) > 0:
+            merged_noleaf_mesh.export(str(out_noleaf_ply))
         
         with open(out_json, 'w') as f:
             json.dump(global_gt, f, indent=4)

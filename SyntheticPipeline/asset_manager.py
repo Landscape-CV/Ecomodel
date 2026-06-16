@@ -3,6 +3,7 @@ import subprocess
 import argparse
 import multiprocessing
 from pathlib import Path
+import sys
 
 def run_blender_gen(args):
     blender_exec, blend_file, script_path, seed, height, out_obj, out_json = args
@@ -27,6 +28,11 @@ def run_blender_gen(args):
     if result.returncode != 0:
         print(f"Error generating tree {seed}: {result.stderr}")
     else:
+        # Generate Ground Truth JSON by parsing the leafless mesh
+        out_noleaf = out_obj.replace(".obj", "_noleaf.obj")
+        parser_script = str(Path(script_path).parent / "mesh_to_gt_cylinders.py")
+        parse_cmd = [sys.executable, parser_script, "--mesh_path", out_noleaf, "--out_json", out_json]
+        subprocess.run(parse_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"Finished Tree (Seed: {seed})")
 
 class AssetManager:
