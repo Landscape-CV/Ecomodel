@@ -153,16 +153,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mesh_path", type=str, required=True)
     parser.add_argument("--out_name", type=str, default="simulated_scan")
+    parser.add_argument("--num_scans", type=int, default=5)
+    parser.add_argument("--area_size", type=float, default=200.0)
     args = parser.parse_args()
     
     sim = Open3DSimulator()
     
-    # Example setup: 3 scan positions around the forest
-    positions = [
-        [0, 0, 1.5],     # Center
-        [10, 10, 1.5],   # Corner
-        [-10, -10, 1.5]  # Opposite Corner
-    ]
+    import random
+    positions = []
+    for _ in range(args.num_scans):
+        x = random.uniform(-args.area_size/2, args.area_size/2)
+        y = random.uniform(-args.area_size/2, args.area_size/2)
+        positions.append([x, y, 1.5])
     
     noise = {
         "resolution_theta_deg": 0.05,
