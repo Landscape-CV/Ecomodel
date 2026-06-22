@@ -55,8 +55,15 @@ def run_pipeline(config):
             blender_path=blender_path,
             blend_file=gen_config.get("blend_file")
         )
+    elif gen_type == "arbaro":
+        from generators.arbaro_generator import ArbaroGenerator
+        generator = ArbaroGenerator(
+            jar_path=gen_config.get("arbaro_jar_path", "SyntheticPipeline/lib/arbaro/arbaro_cmd.jar"),
+            xml_template=gen_config.get("xml_template", "SyntheticPipeline/configs/arbaro.xml"),
+            java_bin=gen_config.get("java_path", "java")
+        )
     else:
-        print(f"Error: Unsupported generator type '{gen_type}'. Available types: blender.")
+        print(f"Error: Unsupported generator type '{gen_type}'. Available types: blender, arbaro.")
         sys.exit(1)
 
     asset_manager = AssetManager(generator=generator, output_dir=assets_dir)

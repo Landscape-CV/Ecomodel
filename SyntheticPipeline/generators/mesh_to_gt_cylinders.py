@@ -6,7 +6,7 @@ from pathlib import Path
 
 def extract_cylinders(mesh_path, out_json):
     print(f"Loading mesh for GT extraction: {mesh_path}")
-    mesh = trimesh.load(mesh_path)
+    mesh = trimesh.load(mesh_path, force='mesh')
     
     # Split the mesh into its disconnected topological components
     # The procedural generator outputs disconnected faces for different branch segments!

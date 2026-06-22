@@ -56,6 +56,48 @@ Key parameters include:
   - `Input_24`: Branching vertical spread
   - `Input_25`: Enable Proxy (Usually overridden internally to False)
 
+## Arbaro Configuration (`arbaro_template.xml`)
+
+Arbaro is a Java-based procedural tree generator that uses an XML parameter system to define species and growth rules based on the Weber/Penn algorithm. You can switch to Arbaro by updating your `pipeline_config.json`:
+```json
+"generator": {
+    "type": "arbaro",
+    "arbaro_jar_path": "SyntheticPipeline/lib/arbaro/arbaro_cmd.jar",
+    "xml_template": "SyntheticPipeline/configs/arbaro.xml",
+    "java_path": "java",
+    "workers": 2
+}
+```
+
+The pipeline automatically handles injecting the random seed, dynamically adjusting the `Scale` parameter to match the height distribution in your config, and running Arbaro twice (once to generate the visual leaf-on mesh, and once with `Leaves` set to 0 to generate a leafless skeleton for GT cylinder extraction).
+
+### Comprehensive Arbaro Options
+Inside your XML template (e.g., `configs/arbaro.example.xml` or `configs/arbaro.xml`), you have full control over the structural parameters. Key parameters to experiment with include:
+
+**General Tree Geometry:**
+- `Scale`: The global scale multiplier (the pipeline actively manipulates this per-tree).
+- `ScaleV`: Variance of the scale (randomness).
+- `BaseSize`: Fractional height of the main trunk before the first branches appear.
+- `Ratio`: How quickly branch thickness decreases.
+- `RatioPower`: The tapering curve of branches.
+- `Flare`: The expansion at the very base of the root.
+
+**Leaves:**
+- `Leaves`: The number of leaves generated on the highest level branches.
+- `LeafShape`: Index of leaf shape (0=ovate, 1=triangle, etc. depending on Arbaro).
+- `LeafScale` / `LeafScaleX`: Physical dimensions of individual leaves.
+- `LeafBend`: How much leaves droop under gravity.
+
+**Branch Levels (0 = Trunk, 1 = Main branches, 2 = Twigs, etc.):**
+*Each level has its own configuration prefix, e.g., `0DownAngle`, `1DownAngle`.*
+- `[level]Branches`: How many branches spawn from the parent level.
+- `[level]DownAngle` / `[level]DownAngleV`: The angle relative to the parent branch.
+- `[level]Rotate` / `[level]RotateV`: The helical rotation around the parent branch.
+- `[level]Length` / `[level]LengthV`: Branch length relative to the parent.
+- `[level]Curve` / `[level]CurveV` / `[level]CurveBack`: Gravity and phototropism bending forces.
+
+For full mathematical definitions of these properties, refer to Jason Weber & Joseph Penn: "Creation and Rendering of Realistic Trees".
+
 ## Quickstart
 
 1. **Setup configs:** Copy `configs/pipeline_config.example.json` to `configs/pipeline_config.json`. Update paths like `"blender_path"` to match your local installation.

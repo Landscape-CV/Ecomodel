@@ -1,4 +1,5 @@
 # Ignore all generated assets, pointclouds, and scenes
+# Ignore all generated assets, pointclouds, and scenes
 output/
 
 # Ignore Python cache files
@@ -8,3 +9,7 @@ __pycache__/
 # Ignore machine-specific configurations
 configs/pipeline_config.json
 configs/mangrove_config.json
+configs/arbaro.xml
+
+# Ignore downloaded binaries/libraries
+lib/

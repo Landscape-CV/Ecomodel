@@ -3,7 +3,7 @@
         "scene_name": "demo_forest",
         "num_trees": 5,
         "area_size": 20.0,
-        "wind_x": 0.2,
+        "wind_x": 0.0,
         "wind_y": 0.0,
         "num_scans": 5
     },
