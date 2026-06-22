@@ -67,28 +67,36 @@ class ForestAssembler:
         merged_noleaf_mesh = trimesh.Trimesh()
         global_gt = []
         
-        # Ground plane (only add to visual mesh, keep GT mesh pure trees for easier parsing)
-        ground = trimesh.creation.box(extents=(area_size[0], area_size[1], 0.1))
-        ground.apply_translation((0, 0, -0.05))
-        merged_mesh = trimesh.util.concatenate([merged_mesh, ground])
+        # Ground plane: Create a dense bumpy grid to simulate grassy floor
+        import scipy.ndimage
+        resolution = 0.5  # half-meter vertices
+        nx = int(area_size[0] / resolution)
+        ny = int(area_size[1] / resolution)
         
-        # Calculate wind rotation (tilt)
-        # Convert wind vector to a rotation matrix
-        # Wind pushes tree, so it rotates around the cross product of wind and UP vector
-        wind_mag = np.linalg.norm(wind_vector)
-        if wind_mag > 1e-4:
-            wind_dir = np.array(wind_vector) / wind_mag
-            up_vector = np.array([0, 0, 1])
-            rot_axis = np.cross(up_vector, wind_dir)
-            if np.linalg.norm(rot_axis) > 1e-4:
-                rot_axis = rot_axis / np.linalg.norm(rot_axis)
-                # Angle proportional to wind magnitude (simple approximation)
-                wind_angle = min(wind_mag, math.radians(30)) 
-                wind_transform = trimesh.transformations.rotation_matrix(wind_angle, rot_axis)
-            else:
-                wind_transform = np.eye(4)
-        else:
-            wind_transform = np.eye(4)
+        # We can just create vertices manually and build faces
+        xs = np.linspace(-area_size[0]/2, area_size[0]/2, nx)
+        ys = np.linspace(-area_size[1]/2, area_size[1]/2, ny)
+        X, Y = np.meshgrid(xs, ys)
+        
+        # Perturb Z
+        noise = np.random.normal(0, 0.5, X.shape)
+        smoothed_noise = scipy.ndimage.gaussian_filter(noise, sigma=2.0)
+        
+        vertices = np.column_stack([X.ravel(), Y.ravel(), smoothed_noise.ravel()])
+        
+        faces = []
+        for i in range(ny - 1):
+            for j in range(nx - 1):
+                v0 = i * nx + j
+                v1 = v0 + 1
+                v2 = v0 + nx
+                v3 = v0 + nx + 1
+                faces.append([v0, v1, v2])
+                faces.append([v1, v3, v2])
+                
+        grid_mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+            
+        merged_mesh = trimesh.util.concatenate([merged_mesh, grid_mesh])
 
         for tree_id in range(num_trees):
             mem = psutil.virtual_memory()
@@ -111,8 +119,8 @@ class ForestAssembler:
             scale = random.uniform(0.7, 1.5)
             scale_transform = trimesh.transformations.scale_matrix(scale)
             
-            # Combine base transformations: Scale -> Yaw -> Wind Tilt
-            rot_scale_transform = wind_transform @ yaw_transform @ scale_transform
+            # Combine base transformations: Scale -> Yaw (Wind tilt removed, handled dynamically in LiDAR sim)
+            rot_scale_transform = yaw_transform @ scale_transform
             
             # 2. Process Mesh
             tree_mesh = trimesh.load(str(obj_path))
