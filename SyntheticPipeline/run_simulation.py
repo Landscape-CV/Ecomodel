@@ -101,6 +101,8 @@ def run_pipeline(config):
         positions.append([x, y, 1.5])
 
     noise_params = config.get("noise", {})
+    noise_params["wind_x"] = wind_x
+    noise_params["wind_y"] = wind_y
     sim.scan(scene_mesh_path, positions, noise_params, f"{scene_name}_scan")
 
     print("\n=== 4. Parsing Ground Truth ===")

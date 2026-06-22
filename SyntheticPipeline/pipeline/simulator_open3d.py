@@ -83,16 +83,39 @@ class Open3DSimulator(BaseLiDARSimulator):
             return None
 
         print(f"Loading mesh: {mesh_path}")
-        mesh = o3d.io.read_triangle_mesh(str(mesh_path))
-        mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+        base_mesh = o3d.io.read_triangle_mesh(str(mesh_path))
         
-        scene = o3d.t.geometry.RaycastingScene()
-        scene.add_triangles(mesh_t)
+        wind_x = noise_params.get("wind_x", 0.0)
+        wind_y = noise_params.get("wind_y", 0.0)
+        wind_sway_std = noise_params.get("wind_sway_std", 0.0)
+        
+        bounds_max = base_mesh.get_max_bound()
+        max_height = bounds_max[2] if bounds_max[2] > 1.0 else 1.0
         
         all_points = []
         
         for pos_idx, origin in enumerate(scan_positions):
             print(f"Scanning from position {pos_idx+1}/{len(scan_positions)}: {origin}")
+            
+            import copy
+            scan_mesh = copy.deepcopy(base_mesh)
+            vertices = np.asarray(scan_mesh.vertices).copy()
+            
+            current_wind_x = wind_x + np.random.normal(0, wind_sway_std)
+            current_wind_y = wind_y + np.random.normal(0, wind_sway_std)
+            
+            if abs(current_wind_x) > 1e-4 or abs(current_wind_y) > 1e-4:
+                z = vertices[:, 2]
+                # Ground plane might be slightly below 0, clip to positive for trees
+                z_factor = np.clip(z / max_height, 0, 1) ** 2
+                vertices[:, 0] += current_wind_x * z_factor
+                vertices[:, 1] += current_wind_y * z_factor
+                scan_mesh.vertices = o3d.utility.Vector3dVector(vertices)
+                scan_mesh.compute_vertex_normals()
+                
+            mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(scan_mesh)
+            scene = o3d.t.geometry.RaycastingScene()
+            scene.add_triangles(mesh_t)
             
             # 1. Create Rays
             res_th = noise_params.get("resolution_theta_deg", 0.1)
@@ -130,15 +153,8 @@ class Open3DSimulator(BaseLiDARSimulator):
                 spatial_noise = np.random.normal(0, beam_div_std, points.shape)
                 points += spatial_noise
                 
-            # C. Wind Sway Noise
-            wind_sway_std = noise_params.get("wind_sway_std", 0.0)
-            if wind_sway_std > 0:
-                heights = points[:, 2]
-                max_height = np.max(heights) if len(heights)>0 else 1.0
-                sway_factor = np.clip(heights / max_height, 0, 1)
-                sway_noise = np.random.normal(0, wind_sway_std, points.shape) * sway_factor[:, np.newaxis]
-                points += sway_noise
                 
+            # Note: Wind Sway Noise on points is removed, replaced by mesh deformation above.
             # 4. Calculate Intensity based on incidence angle
             primitive_normals = ans['primitive_normals'].numpy()[hit_mask]
             
