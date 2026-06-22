@@ -1,30 +1,42 @@
 import numpy as np
 import argparse
+import warnings
 from pathlib import Path
+from typing import List, Dict, Optional
 
 try:
     import open3d as o3d
 except ImportError:
-    print("Warning: open3d is not installed. Please 'pip install open3d' to run Open3DSimulator.")
+    warnings.warn("open3d is not installed. Please 'pip install open3d' to run Open3DSimulator.")
 
 try:
     import laspy
 except ImportError:
-    print("Warning: laspy is not installed. Please 'pip install laspy lazrs' for .laz support.")
+    warnings.warn("laspy is not installed. Please 'pip install laspy lazrs' for .laz support.")
 
-from simulator_base import BaseLiDARSimulator
+from .simulator_base import BaseLiDARSimulator
 
 class Open3DSimulator(BaseLiDARSimulator):
-    def __init__(self, output_dir="SyntheticPipeline/output/pointclouds"):
+    """
+    Simulates a Terrestrial Laser Scanner (TLS) using Open3D's raycasting engine.
+    Supports distance noise, beam divergence proxy (spatial jitter), and wind sway.
+    """
+    def __init__(self, output_dir: str = "SyntheticPipeline/output/pointclouds"):
         super().__init__(output_dir)
         
-    def _create_spherical_rays(self, origin, resolution_theta=0.1, resolution_phi=0.1):
+    def _create_spherical_rays(self, origin: List[float], resolution_theta: float = 0.1, resolution_phi: float = 0.1):
         """
         Create rays mimicking a TLS spherical scan.
-        theta: azimuthal angle [0, 360]
-        phi: polar angle [0, 180]
-        resolutions are in degrees.
+        
+        Args:
+            origin (List[float]): XYZ coordinate of the scanner.
+            resolution_theta (float): Azimuthal angle resolution in degrees.
+            resolution_phi (float): Polar angle resolution in degrees.
+            
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Returns the full ray array and the direction vectors.
         """
+        assert resolution_theta > 0 and resolution_phi > 0, "Resolutions must be strictly positive."
         thetas = np.arange(0, 360, resolution_theta)
         phis = np.arange(0, 180, resolution_phi)
         
@@ -46,7 +58,30 @@ class Open3DSimulator(BaseLiDARSimulator):
         rays = np.concatenate([origins, directions], axis=1).astype(np.float32)
         return rays, directions
 
-    def scan(self, mesh_path, scan_positions, noise_params, output_filename="simulated_scan"):
+    def scan(
+        self, 
+        mesh_path: str, 
+        scan_positions: List[List[float]], 
+        noise_params: Dict[str, float], 
+        output_filename: str = "simulated_scan"
+    ) -> Optional[str]:
+        """
+        Performs raycasting from specified scan positions onto a target mesh.
+        
+        Args:
+            mesh_path (str): Path to the target scene mesh (.ply or .obj).
+            scan_positions (List[List[float]]): List of scanner origins [x, y, z].
+            noise_params (Dict[str, float]): Dictionary containing noise configuration.
+            output_filename (str): Name of the output LAZ file (without extension).
+            
+        Returns:
+            Optional[str]: Path to the generated LAZ file, or None if it failed.
+        """
+        assert len(scan_positions) > 0, "Must provide at least one scan position."
+        if not Path(mesh_path).exists():
+            warnings.warn(f"Mesh file not found: {mesh_path}")
+            return None
+
         print(f"Loading mesh: {mesh_path}")
         mesh = o3d.io.read_triangle_mesh(str(mesh_path))
         mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)

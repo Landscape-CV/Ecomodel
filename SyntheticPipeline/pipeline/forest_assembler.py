@@ -3,7 +3,9 @@ import os
 import random
 import argparse
 import math
+import warnings
 from pathlib import Path
+from typing import Tuple, List, Optional
 import numpy as np
 import psutil
 import sys
@@ -11,9 +13,14 @@ import sys
 try:
     import trimesh
 except ImportError:
-    print("Warning: trimesh is not installed. Please 'pip install trimesh' to run ForestAssembler.")
+    warnings.warn("trimesh is not installed. Please 'pip install trimesh' to run ForestAssembler.")
 
 class ForestAssembler:
+    """
+    Assembles individual tree assets into a combined forest scene.
+    It randomly places trees, applies wind tilt and scale variations,
+    and accurately transforms ground truth skeleton parameters.
+    """
     def __init__(self, asset_dir="SyntheticPipeline/output/assets", output_dir="SyntheticPipeline/output/scenes"):
         self.asset_dir = Path(asset_dir)
         self.output_dir = Path(output_dir)
@@ -30,10 +37,28 @@ class ForestAssembler:
                 assets.append((obj_path, json_path, noleaf_path if noleaf_path.exists() else None))
         return assets
         
-    def generate_scene(self, scene_name="scene_001", area_size=(50, 50), num_trees=50, wind_vector=(0.1, 0, 0)):
+    def generate_scene(
+        self, 
+        scene_name: str = "scene_001", 
+        area_size: Tuple[float, float] = (50.0, 50.0), 
+        num_trees: int = 50, 
+        wind_vector: Tuple[float, float, float] = (0.1, 0.0, 0.0)
+    ) -> None:
+        """
+        Generates a forest scene mesh and global ground truth JSON.
+        
+        Args:
+            scene_name (str): Name of the generated scene files.
+            area_size (tuple): Width and height of the generation area.
+            num_trees (int): Number of trees to place.
+            wind_vector (tuple): 3D vector representing wind direction and magnitude.
+        """
+        assert area_size[0] > 0 and area_size[1] > 0, "Area size dimensions must be positive."
+        assert num_trees > 0, "Number of trees must be greater than zero."
+
         assets = self._get_tree_assets()
         if not assets:
-            print("No tree assets found. Please run AssetManager first.")
+            warnings.warn("No tree assets found. Please run AssetManager first.")
             return
             
         print(f"Found {len(assets)} tree assets. Generating forest...")
@@ -120,6 +145,8 @@ class ForestAssembler:
             translation = transform[:3, 3]
             
             for cyl in skeleton:
+                assert "start" in cyl and "end" in cyl and "axis" in cyl, "Invalid skeleton data format."
+                
                 # Transform Start
                 start_orig = np.array(cyl["start"])
                 start_new = rot_matrix @ start_orig + translation
