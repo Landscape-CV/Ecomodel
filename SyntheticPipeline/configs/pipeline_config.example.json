@@ -1,0 +1,30 @@
+{
+    "simulation": {
+        "scene_name": "demo_forest",
+        "num_trees": 5,
+        "area_size": 20.0,
+        "wind_x": 0.2,
+        "wind_y": 0.0,
+        "num_scans": 5
+    },
+    "generator": {
+        "type": "blender",
+        "blender_path": "D:\\Program Files\\Blender Foundation\\Blender 5.1\\blender.exe",
+        "blend_file": "SyntheticPipeline\\output\\assets\\MangroveGen.blend",
+        "workers": 2
+    },
+    "noise": {
+        "resolution_theta_deg": 0.05,
+        "resolution_phi_deg": 0.05,
+        "distance_noise_std": 0.005,
+        "wind_sway_std": 0.02,
+        "beam_divergence_noise_std": 0.005,
+        "voxel_downsample_size": 0.01
+    },
+    "output_dirs": {
+        "base": "SyntheticPipeline/output",
+        "assets": "SyntheticPipeline/output/assets",
+        "scenes": "SyntheticPipeline/output/scenes",
+        "pointclouds": "SyntheticPipeline/output/pointclouds"
+    }
+}

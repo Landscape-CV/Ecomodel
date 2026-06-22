@@ -4,3 +4,7 @@ output/
 # Ignore Python cache files
 __pycache__/
 *.pyc
+
+# Ignore machine-specific configurations
+configs/pipeline_config.json
+configs/mangrove_config.json
