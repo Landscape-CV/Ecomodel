@@ -7,6 +7,124 @@ from pathlib import Path
 import os
 from Utils.Utils import load_point_cloud
 
+
+def generate_report(input_folder: str, results_run_dir: str, output_pdf: str) -> int:
+    """
+    Generate a PDF report for all tiles whose results exist under results_run_dir.
+
+    For each tile in input_folder (LAS/LAZ), the function looks for a matching
+    subfolder in results_run_dir containing:
+        {stem}_cylinders.txt
+        {stem}_leavesremoved.xyz   (or any file with "leavesremoved" in the name)
+        {stem}_data.txt            (mean x y z, ground_z)
+
+    Parameters
+    ----------
+    input_folder : str
+        Folder containing the original LAS/LAZ tiles.
+    results_run_dir : str
+        Run directory produced by the lite pipeline
+        (contains per-tile subfolders).
+    output_pdf : str
+        Path to write the output PDF.
+
+    Returns
+    -------
+    int
+        Number of pages written to the PDF.
+    """
+    report = ReportMaker(output_pdf)
+    page_count = 0
+
+    input_path = Path(input_folder)
+    results_path = Path(results_run_dir)
+
+    laz_files = sorted(
+        list(input_path.glob("*.las")) + list(input_path.glob("*.laz"))
+    )
+
+    for laz_file in laz_files:
+        tile_name = laz_file.stem
+
+        # Locate matching results subfolder
+        tile_results = results_path / tile_name
+        data_present = tile_results.is_dir()
+
+        cylinders_data = np.array([])
+        leaves_removed = np.array([])
+        actual_mean = None
+        ground_z = 0.0
+
+        if data_present:
+            for data_file in os.listdir(str(tile_results)):
+                data_path = str(tile_results / data_file)
+                if "cylinders" in data_file:
+                    try:
+                        cylinders_data = np.loadtxt(data_path)
+                    except Exception:
+                        cylinders_data = np.array([])
+                elif "data" in data_file.split("_")[-1]:
+                    try:
+                        with open(data_path, "r") as f:
+                            mean_string = f.readline().strip()
+                            ground_z = float(f.readline().strip())
+                            parts = mean_string.split()
+                            actual_mean = np.array([float(p) for p in parts[:3]])
+                    except Exception:
+                        pass
+                elif "leavesremoved" in data_file.split("_")[-1]:
+                    try:
+                        _, leaves_removed = load_point_cloud(data_path, full_data=True)
+                    except Exception:
+                        leaves_removed = np.array([])
+
+        # Load original tile for the original-cloud render
+        try:
+            pc, pcdata = load_point_cloud(str(laz_file), full_data=True)
+        except Exception:
+            continue
+
+        if actual_mean is None:
+            actual_mean = np.mean(pcdata[:, :3], axis=0)
+
+        pcdata[:, :3] = pcdata[:, :3] - actual_mean
+
+        # Original point cloud
+        plotter = ResultsPlotter(np.array([0, 0, ground_z]), legend=False, off_screen=True)
+        plotter.add_point_cloud_np_intensity(pcdata)
+        path = plotter.get_image(f"{tile_name}_original.jpg")
+        report.add_orignal_point_cloud(path)
+
+        if data_present and cylinders_data.size > 0 and leaves_removed.size > 0:
+            leaves_removed[:, :3] = leaves_removed[:, :3] - actual_mean
+            cylinders_data[:, :3] = cylinders_data[:, :3] - actual_mean
+
+            # Leaves-removed cloud
+            plotter = ResultsPlotter(np.array([0, 0, ground_z]), legend=False, off_screen=True)
+            plotter.add_point_cloud_np_intensity(leaves_removed)
+            path = plotter.get_image(f"{tile_name}_wood.jpg")
+            report.add_point_cloud_leaves_removed(path)
+
+            # Leaves-removed + cylinders
+            plotter = ResultsPlotter(np.array([0, 0, ground_z]), legend=False, off_screen=True)
+            plotter.add_point_cloud_np_intensity(leaves_removed)
+            plotter.add_cylinders(cylinders_data)
+            path = plotter.get_image(f"{tile_name}_branches_cylinders.jpg")
+            report.add_point_cloud_leaves_removed_cylinders(path)
+
+            # Cylinders only
+            plotter = ResultsPlotter(np.array([0, 0, ground_z]), legend=False, off_screen=True)
+            plotter.add_cylinders(cylinders_data)
+            path = plotter.get_image(f"{tile_name}_cylinders.jpg")
+            report.add_just_cylinders(path)
+
+        report.canvas.drawString(5 * inch, 8 * inch, f"Tile: {tile_name}")
+        report.canvas.showPage()
+        page_count += 1
+
+    report.save()
+    return page_count
+
 # class CameraTracker:
 #     def __init__(self, plotter):
 #         self.positions = []

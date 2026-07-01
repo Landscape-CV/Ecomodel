@@ -1049,6 +1049,126 @@ class Segmenter2():
 
 
 
+class SegmenterTreeLearn:
+    """
+    Wraps the TreeLearn neural-network pipeline as a drop-in segmenter.
+
+    Accepts an (N,3) or (N,4) numpy array and returns (point_cloud, instance_ids)
+    using the same label convention as SegmenterScanline:
+        -1  = non-tree / unassigned
+        1+  = individual tree instances
+
+    TreeLearn handles ground removal implicitly through its semantic head
+    (non-tree points get label 0, remapped to -1 here), so no separate CSF
+    step is required when using this segmenter.
+
+    Parameters
+    ----------
+    config_path : str
+        Path to the TreeLearn YAML pipeline config.  The config's
+        ``forest_path`` is overridden at runtime; the ``pretrain`` key
+        must point to a downloaded ``.pth`` weights file.
+    use_gpu : bool
+        If True (default) the model runs on CUDA.  Set False to run on CPU
+        (very slow - only for testing without a GPU).
+    """
+
+    def __init__(self, config_path: str, use_gpu: bool = True):
+        import sys
+        from pathlib import Path
+        # Make sure the TreeLearn package is importable
+        _tl_root = Path(__file__).resolve().parent / "TreeLearn"
+        if str(_tl_root) not in sys.path:
+            sys.path.insert(0, str(_tl_root))
+
+        from tree_learn.util import get_config
+        self.config_path = config_path
+        self.base_config = get_config(config_path)
+        self.device = 'cuda' if use_gpu else 'cpu'
+
+    def segment(self, point_cloud: np.ndarray, output_dir: str = None):
+        """
+        Run TreeLearn instance segmentation on an in-memory point cloud.
+
+        Parameters
+        ----------
+        point_cloud : np.ndarray
+            (N, 3) or (N, 4) array [x, y, z, (intensity)].
+        output_dir : str
+            Directory for intermediate TreeLearn files.  A TemporaryDirectory
+            is used automatically if not supplied.
+
+        Returns
+        -------
+        point_cloud : np.ndarray
+            The (possibly voxelised) point cloud TreeLearn operated on.
+        instance_ids : np.ndarray
+            Per-point integer labels.  -1 = non-tree, 1+ = tree instances.
+        """
+        import copy
+        import tempfile
+        from pathlib import Path
+        from tree_learn.util import get_config
+
+        # Import the patched pipeline that accepts a device argument
+        import sys
+        _tl_root = Path(__file__).resolve().parent / "TreeLearn"
+        _tools = str(_tl_root / "tools" / "pipeline")
+        if _tools not in sys.path:
+            sys.path.insert(0, _tools)
+        from pipeline import run_treelearn_pipeline
+
+        xyz = point_cloud[:, :3].astype(np.float64)
+
+        _tmp_ctx = None
+        if output_dir is None:
+            _tmp_ctx = tempfile.TemporaryDirectory()
+            work_dir = _tmp_ctx.name
+        else:
+            work_dir = output_dir
+
+        try:
+            forest_dir = os.path.join(work_dir, "forest")
+            os.makedirs(forest_dir, exist_ok=True)
+            forest_filename = os.path.basename(work_dir) + ".npz"
+            forest_path = os.path.join(forest_dir, forest_filename)
+            np.savez_compressed(forest_path, points=xyz)
+
+            config = copy.deepcopy(self.base_config)
+            config.forest_path = forest_path
+            config.tile_generation = True
+            config.save_cfg.save_treewise = False
+            config.save_cfg.save_pointwise = False
+            config.save_cfg.save_formats = ['npz']
+
+            run_treelearn_pipeline(config, device=self.device)
+
+            result_path = os.path.join(
+                work_dir, 'results', 'full_forest',
+                os.path.basename(work_dir) + ".npz"
+            )
+            if not os.path.exists(result_path):
+                return None, None
+
+            data = np.load(result_path, allow_pickle=True)
+            coords = data['points']
+            instance_preds = data['labels'].copy()
+            # Remap TreeLearn 0 (non-tree) → ecomodel -1
+            instance_preds[instance_preds == 0] = -1
+
+            return coords, instance_preds
+
+        except Exception as exc:
+            import traceback
+            print(f"[SegmenterTreeLearn] segmentation failed: {exc}")
+            traceback.print_exc()
+            return None, None
+
+        finally:
+            if _tmp_ctx is not None:
+                _tmp_ctx.cleanup()
+
+
 if __name__ == "__main__":
     classifier = DistanceBasedNoiseRemoval()
 

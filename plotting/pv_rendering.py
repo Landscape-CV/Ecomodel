@@ -280,6 +280,53 @@ def build_cylinder_meshes(
     return mesh_list, starts, ends, radii, lengths
 
 
+def build_skeleton_meshes(cylinders, line_width=2):
+    """
+    Build the QSM skeleton: every cylinder centreline drawn as a line segment.
+
+    Coloured by branch order when the ``cylinders`` dict carries a
+    ``"branch_order"`` array, otherwise a single colour.  Returns the same
+    ``(mesh_list, starts, ends, radii, lengths)`` tuple as
+    ``build_cylinder_meshes`` so the click-to-volume callback works unchanged.
+    """
+    starts  = np.asarray(cylinders["start"],  dtype=np.float64)
+    axes    = np.asarray(cylinders["axis"],   dtype=np.float64)
+    radii   = np.asarray(cylinders["radius"], dtype=np.float64)
+    lengths = np.asarray(cylinders["length"], dtype=np.float64)
+    n = len(radii)
+    if n == 0:
+        empty = np.empty((0, 3), dtype=np.float64)
+        return [], empty, empty, np.empty(0), np.empty(0)
+
+    norms = np.linalg.norm(axes, axis=1, keepdims=True)
+    axis_norm = np.where(norms > 1e-9, axes / np.maximum(norms, 1e-9), axes)
+    ends = starts + axis_norm * lengths[:, None]
+
+    line_pts = np.empty((n * 2, 3), dtype=np.float32)
+    line_pts[0::2] = starts.astype(np.float32)
+    line_pts[1::2] = ends.astype(np.float32)
+    cells = np.empty(n * 3, dtype=np.int_)
+    cells[0::3] = 2
+    cells[1::3] = np.arange(n) * 2
+    cells[2::3] = np.arange(n) * 2 + 1
+    mesh = pv.PolyData()
+    mesh.points = line_pts
+    mesh.lines = cells
+
+    order = cylinders.get("branch_order")
+    if order is not None and len(order) == n:
+        pt_order = np.empty(n * 2, dtype=np.float32)
+        pt_order[0::2] = np.asarray(order, dtype=np.float32)
+        pt_order[1::2] = np.asarray(order, dtype=np.float32)
+        mesh["branch_order"] = pt_order
+        kwargs = dict(scalars="branch_order", cmap="turbo", line_width=line_width,
+                      opacity=0.95, show_scalar_bar=False)
+    else:
+        kwargs = dict(color="#d32f2f", line_width=line_width, opacity=0.95)
+
+    return [(mesh, kwargs)], starts, ends, radii, lengths
+
+
 def build_voxel_query_meshes(
     cloud: np.ndarray,
     labels: "np.ndarray | None",

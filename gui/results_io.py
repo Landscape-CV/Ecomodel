@@ -6,12 +6,12 @@ Responsibilities
 - Define the on-disk layout for a single pipeline run:
 
       {results_folder}/
-          {run_name}/                   ← created by make_run_dir()
-              metadata.json             ← RunMetadata (always written)
-              {cylinder_filename}.txt   ← cylinder data  (written by pipeline)
-              point_cloud.npy           ← subsampled cloud snapshot (≤100 k pts)
-              segment_labels.npy        ← matching segment labels
-              pre_rgi_tile_*.xyz        ← intermediate files (written by ecomodel)
+          {run_name}/                   <- created by make_run_dir()
+              metadata.json             <- RunMetadata (always written)
+              {cylinder_filename}.txt   <- cylinder data  (written by pipeline)
+              point_cloud.npy           <- subsampled cloud snapshot (≤100 k pts)
+              segment_labels.npy        <- matching segment labels
+              pre_rgi_tile_*.xyz        <- intermediate files (written by ecomodel)
               ...
 
 - Provide thin helpers used by pipeline.py and main_window.py.
@@ -57,6 +57,7 @@ POINT_CLOUD_FILE      = "point_cloud.npy"
 SEGMENT_LABELS_FILE   = "segment_labels.npy"
 COVER_SETS_FILE       = "cover_sets.npy"
 POINT_FIELDS_FILE     = "point_fields.npz"   # named scalar fields (intensity, etc.)
+TREE_METRICS_FILE     = "tree_metrics.csv"   # per-tree QSM attributes (DBH, height, volume)
 
 _MAX_SNAPSHOT_POINTS  = 300_000
 
@@ -116,7 +117,7 @@ def find_run_dirs(results_folder: str) -> list[Path]:
 
 def write_run_metadata(
     run_dir: Path,
-    config,               # EcomodelConfig — imported lazily to avoid circular dep
+    config,               # EcomodelConfig - imported lazily to avoid circular dep
     cylinder_count: int,
     point_count: int,
     cloud_mean: list[float] | None = None,
@@ -220,7 +221,7 @@ def save_point_cloud_snapshot(
     Saves the full float32 point cloud to point_cloud.npy.
 
     Returns np.arange(len(cloud)) so callers can pass the same indices to
-    save_segment_labels_snapshot — guaranteeing row-for-row alignment.
+    save_segment_labels_snapshot - guaranteeing row-for-row alignment.
     """
     if cloud is None or len(cloud) == 0:
         return np.array([], dtype=np.int64)
@@ -292,3 +293,37 @@ def save_point_fields_snapshot(
         to_save[name] = out.astype(np.float32)
     if to_save:
         np.savez(run_dir / POINT_FIELDS_FILE, **to_save)
+
+
+def save_tree_metrics(run_dir: Path, rows: "list[dict]") -> Path:
+    """
+    Write per-tree QSM attributes to tree_metrics.csv.
+
+    ``rows`` is a list of flat dicts (one per tree).  Columns are fixed so the
+    Results page can read them back without guessing.  Returns the file path.
+    """
+    import csv
+    from Utils.tree_metrics import TREE_METRIC_COLS
+
+    cols = ["tree_id", "tile"] + [c for c in TREE_METRIC_COLS if c != "tree_id"]
+    path = Path(run_dir) / TREE_METRICS_FILE
+    with open(path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    return path
+
+
+def load_tree_metrics(run_dir: Path) -> "list[dict]":
+    """Read tree_metrics.csv back as a list of dicts, or [] if absent."""
+    import csv
+
+    path = Path(run_dir) / TREE_METRICS_FILE
+    if not path.exists():
+        return []
+    try:
+        with open(path, newline="") as fh:
+            return list(csv.DictReader(fh))
+    except Exception:
+        return []

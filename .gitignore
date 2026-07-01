@@ -21,3 +21,8 @@ test.py
 cloth_nodes.txt
 /local_testing
 /_experimentation
+
+# Runtime artifacts
+/pickle/
+/images/
+*.log

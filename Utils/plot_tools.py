@@ -1,4 +1,5 @@
 import json
+import os
 import pyvista as pv
 import numpy as np
 import matplotlib.pyplot as plt
@@ -175,6 +176,7 @@ class ResultsPlotter:
 
     def get_image(self, filename):
         filepath = f"images/{filename}"
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
         self.plotter.show()
         self.plotter.screenshot(filepath)
 

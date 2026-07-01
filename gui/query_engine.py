@@ -1,5 +1,5 @@
 """
-query_engine.py — Spatial voxel query for a completed pipeline run.
+query_engine.py - Spatial voxel query for a completed pipeline run.
 
 Loads the saved point-cloud snapshot, segment labels, and (optionally) the
 QSM cylinder file for a run directory, then answers axis-aligned voxel
@@ -16,8 +16,8 @@ converted to normalised space at query time by subtracting cloud_mean.
 
 Public API
 ----------
-VoxelQueryResult    dataclass — result of a single voxel query
-QueryEngine         class     — loads run data once, answers repeated queries
+VoxelQueryResult    dataclass - result of a single voxel query
+QueryEngine         class     - loads run data once, answers repeated queries
 """
 
 from __future__ import annotations
@@ -59,6 +59,12 @@ def _try_read_epsg(input_folder: Path) -> "int | None":
         return None
 
 
+# Branch-diameter classes (metres of diameter = 2 x radius), for the per-voxel
+# distribution of thin vs thick branches.
+DIAMETER_CLASS_EDGES_M = [0.0, 0.01, 0.02, 0.05, 0.10, float("inf")]
+DIAMETER_CLASS_LABELS = ["lt1cm", "1to2cm", "2to5cm", "5to10cm", "gt10cm"]
+
+
 @dataclass
 class VoxelQueryResult:
     """Result of a single axis-aligned voxel query."""
@@ -72,7 +78,7 @@ class VoxelQueryResult:
     point_count:         int               # total points inside the voxel
     tree_point_count:    int               # label >= 0
     ground_point_count:  int               # label == -1 (non-tree / ground)
-    veg_cover:           float             # tree_point_count / point_count (0–1)
+    veg_cover:           float             # tree_point_count / point_count (0-1)
 
     # ── Per-segment breakdown ─────────────────────────────────────────────────
     segment_ids:         list              # sorted list of tree-segment IDs found
@@ -85,6 +91,13 @@ class VoxelQueryResult:
     total_branch_length: "float | None"    # metres
     branch_radii:        "np.ndarray | None"   # (M,) per-cylinder radii
     branch_lengths:      "np.ndarray | None"   # (M,) per-cylinder lengths
+    median_branch_radius:        "float | None"   # metres
+    p90_branch_radius:           "float | None"   # 90th-percentile radius (m)
+    length_weighted_mean_radius: "float | None"   # length-weighted mean radius (m)
+    diameter_class_counts:       "list | None"    # branch count per diameter class
+    diameter_class_lengths:      "list | None"    # branch length (m) per diameter class
+    max_branch_order:            "int | None"     # None if run has no branch-order column
+    mean_branch_order:           "float | None"
 
     # ── Mask back into the loaded cloud ──────────────────────────────────────
     point_mask:          np.ndarray        # (N,) bool
@@ -120,7 +133,7 @@ class QueryEngine:
         """
         Load point_cloud.npy, segment_labels.npy, and the cylinder .txt file.
 
-        segment_labels and cylinder data are optional — the engine loads them
+        segment_labels and cylinder data are optional - the engine loads them
         when present and silently skips them when not.
 
         Returns None on success, or a human-readable error string on failure.
@@ -173,7 +186,7 @@ class QueryEngine:
             except Exception:
                 pass
 
-        # ── Cylinder data (optional — QSM output) ────────────────────────────
+        # ── Cylinder data (optional - QSM output) ────────────────────────────
         self._cyls = None
         if meta is not None:
             cyl_path = self._run_dir / meta.cylinder_file
@@ -182,12 +195,14 @@ class QueryEngine:
                     data = np.loadtxt(cyl_path)
                     if data.ndim == 1:
                         data = data.reshape(1, -1)
-                    if data.ndim == 2 and data.shape[1] == 8 and data.shape[0] > 0:
+                    if data.ndim == 2 and data.shape[1] >= 8 and data.shape[0] > 0:
                         self._cyls = {
                             "start":  data[:, 0:3],
                             "radius": data[:, 3],
                             "axis":   data[:, 4:7],
                             "length": data[:, 7],
+                            # Optional 9th column = branch order (newer runs only).
+                            "branch_order": data[:, 8] if data.shape[1] >= 9 else None,
                         }
                 except Exception:
                     pass
@@ -269,8 +284,8 @@ class QueryEngine:
 
         Raises
         ------
-        RuntimeError  — if no CRS is available.
-        ImportError   — if pyproj is not installed.
+        RuntimeError  - if no CRS is available.
+        ImportError   - if pyproj is not installed.
         """
         if not self.has_crs:
             raise RuntimeError(
@@ -317,7 +332,7 @@ class QueryEngine:
         ``wz = self._mean[2] + height_agl`` so :meth:`world_to_norm` folds it
         to exactly that Z.
 
-        Requires ``has_crs == True`` — raises ``RuntimeError`` otherwise via
+        Requires ``has_crs == True`` - raises ``RuntimeError`` otherwise via
         :meth:`lonlat_to_norm`.
         """
         nx, ny = self.lonlat_to_norm(lon, lat)
@@ -339,7 +354,7 @@ class QueryEngine:
         Return all data for an axis-aligned cube of side ``voxel_size`` (m)
         centred on the world coordinate (wx, wy[, wz]).
 
-        wz is optional — when omitted, the cube is centred at Z=0 in
+        wz is optional - when omitted, the cube is centred at Z=0 in
         normalised space (terrain level).
 
         Raises RuntimeError when called before load() succeeds.
@@ -393,9 +408,16 @@ class QueryEngine:
         total_branch_length = None
         branch_radii        = None
         branch_lengths      = None
+        median_branch_radius        = None
+        p90_branch_radius           = None
+        length_weighted_mean_radius = None
+        diameter_class_counts       = None
+        diameter_class_lengths      = None
+        max_branch_order            = None
+        mean_branch_order           = None
 
         if self._cyls is not None:
-            # Cylinder starts are in world space — convert to normalised.
+            # Cylinder starts are in world space - convert to normalised.
             starts_norm = (
                 self._cyls["start"] - np.array(self._mean, dtype=np.float64)
             )
@@ -411,6 +433,27 @@ class QueryEngine:
                 mean_branch_radius  = float(branch_radii.mean())
                 max_branch_radius   = float(branch_radii.max())
                 total_branch_length = float(branch_lengths.sum())
+                median_branch_radius = float(np.median(branch_radii))
+                p90_branch_radius    = float(np.percentile(branch_radii, 90))
+                _len_sum = float(branch_lengths.sum())
+                length_weighted_mean_radius = (
+                    float((branch_radii * branch_lengths).sum() / _len_sum)
+                    if _len_sum > 0 else mean_branch_radius
+                )
+                # Distribution across diameter classes (count + total length).
+                _cls = np.clip(
+                    np.digitize(2.0 * branch_radii, DIAMETER_CLASS_EDGES_M) - 1,
+                    0, len(DIAMETER_CLASS_LABELS) - 1,
+                )
+                diameter_class_counts = [int((_cls == k).sum())
+                                         for k in range(len(DIAMETER_CLASS_LABELS))]
+                diameter_class_lengths = [float(branch_lengths[_cls == k].sum())
+                                          for k in range(len(DIAMETER_CLASS_LABELS))]
+                _bo = self._cyls.get("branch_order")
+                if _bo is not None:
+                    _bo_v = _bo[in_voxel]
+                    max_branch_order = int(_bo_v.max())
+                    mean_branch_order = float(_bo_v.mean())
 
         return VoxelQueryResult(
             voxel_size          = voxel_size,
@@ -428,5 +471,12 @@ class QueryEngine:
             total_branch_length = total_branch_length,
             branch_radii        = branch_radii,
             branch_lengths      = branch_lengths,
+            median_branch_radius        = median_branch_radius,
+            p90_branch_radius           = p90_branch_radius,
+            length_weighted_mean_radius = length_weighted_mean_radius,
+            diameter_class_counts       = diameter_class_counts,
+            diameter_class_lengths      = diameter_class_lengths,
+            max_branch_order            = max_branch_order,
+            mean_branch_order           = mean_branch_order,
             point_mask          = point_mask,
         )

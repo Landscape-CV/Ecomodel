@@ -12,9 +12,9 @@ Threading model
 ---------------
 All file I/O and computation runs on background threads (BgTask):
 
-  BgTask(_bg_scan_runs, folder)      → scan results folder (shared with ResultsPage)
-  BgTask(_bg_engine_load, run_dir)   → QueryEngine.load() (np.load × 2 + np.loadtxt)
-  BgTask(_bg_query, engine, ...)     → query_voxel() + build_voxel_query_meshes()
+  BgTask(_bg_scan_runs, folder)      -> scan results folder (shared with ResultsPage)
+  BgTask(_bg_engine_load, run_dir)   -> QueryEngine.load() (np.load × 2 + np.loadtxt)
+  BgTask(_bg_query, engine, ...)     -> query_voxel() + build_voxel_query_meshes()
 
 Only EmbeddedPlotWidget.show_pyvista_meshes() touches the plotter on the
 main thread.
@@ -41,7 +41,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
-    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -74,7 +73,7 @@ def _bg_engine_load(run_dir: Path) -> tuple:
 
 def _bg_query(engine, wx, wy, wz, voxel_size) -> object:
     """
-    Run query_voxel on the background thread — numpy computation only.
+    Run query_voxel on the background thread - numpy computation only.
 
     PyVista mesh construction is deliberately NOT done here; it happens on
     the main thread in _on_query_done() to avoid VTK thread-safety issues.
@@ -88,7 +87,7 @@ class QueryPage(QWidget):
     """
     Inline voxel-query page.
 
-    Emits ``back_requested`` when the user clicks "← Back".
+    Emits ``back_requested`` when the user clicks "<- Back".
     Emits ``status_message(str)`` for status-bar updates.
     """
 
@@ -113,6 +112,7 @@ class QueryPage(QWidget):
         # View-layer caches
         self._cloud_cache:  "list | None" = None   # cached point-cloud mesh_list
         self._cyls_cache:   "dict | None" = None   # cached {mesh_list, …} from _bg_build_cyl_meshes
+        self._skel_cache:   "dict | None" = None   # cached QSM skeleton meshes
         self._bg_meshes:    "list | None" = None   # currently active background layer
         self._query_meshes: "list | None" = None   # latest voxel-query overlay
 
@@ -133,7 +133,7 @@ class QueryPage(QWidget):
 
         # ── Shared top bar (Back + Run selector) ──────────────────────────────
         top_row = QHBoxLayout()
-        self._back_btn = QPushButton("← Back")
+        self._back_btn = QPushButton("Back")
         self._back_btn.setToolTip("Return to the results page")
         self._back_btn.clicked.connect(self.back_requested)
         top_row.addWidget(self._back_btn)
@@ -162,7 +162,7 @@ class QueryPage(QWidget):
 
         # ── Main splitter: left = control tabs, right = 3D plotter ───────────
         # IMPORTANT: EmbeddedPlotWidget (VTK/OpenGL) must live directly in the
-        # splitter — never inside a QTabWidget page.  On Windows, hiding a VTK
+        # splitter - never inside a QTabWidget page.  On Windows, hiding a VTK
         # render window inside an inactive tab corrupts the HWND and causes
         # GPU driver crashes (BSOD) when the user interacts or we update meshes.
         splitter = QSplitter(Qt.Horizontal)
@@ -188,9 +188,15 @@ class QueryPage(QWidget):
         self._btn_cloud.setToolTip("Show point cloud as background (query overlays on top)")
         self._btn_cyls  = QPushButton("Cylinders")
         self._btn_cyls.setToolTip("Show QSM cylinders as background (query overlays on top)")
-        for _b in (self._btn_cloud, self._btn_cyls):
+        self._btn_skel  = QPushButton("Skeleton")
+        self._btn_skel.setToolTip("Show QSM skeleton (branch centrelines) as background")
+        for _b in (self._btn_cloud, self._btn_cyls, self._btn_skel):
             _b.setEnabled(False)
             view_btn_row.addWidget(_b)
+        self._btn_reset_view = QPushButton("Reset View")
+        self._btn_reset_view.setToolTip("Reset camera to Z-up isometric view")
+        self._btn_reset_view.clicked.connect(lambda: self._plot.reset_view())
+        view_btn_row.addWidget(self._btn_reset_view)
         view_btn_row.addStretch()
         rv.addLayout(view_btn_row)
 
@@ -209,6 +215,7 @@ class QueryPage(QWidget):
 
         self._btn_cloud.clicked.connect(self._show_cloud)
         self._btn_cyls.clicked.connect(self._show_cylinders)
+        self._btn_skel.clicked.connect(self._show_skeleton)
 
     def _build_single_point_controls(self) -> QWidget:
         """Left-pane controls for the Single Point tab (no plotter inside)."""
@@ -408,7 +415,7 @@ class QueryPage(QWidget):
         self._batch_log = QPlainTextEdit()
         self._batch_log.setReadOnly(True)
         self._batch_log.setPlaceholderText(
-            "Batch log — warnings, skipped rows, and final summary appear here."
+            "Batch log - warnings, skipped rows, and final summary appear here."
         )
         self._batch_log.setStyleSheet("font-family: monospace; font-size: 11px;")
         layout.addWidget(self._batch_log, stretch=1)
@@ -426,7 +433,7 @@ class QueryPage(QWidget):
     # ── Tab switching ─────────────────────────────────────────────────────────
 
     def _on_tab_changed(self, index: int) -> None:
-        """No-op — the plotter lives outside the tabs so no re-init needed."""
+        """No-op - the plotter lives outside the tabs so no re-init needed."""
         pass
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -480,7 +487,7 @@ class QueryPage(QWidget):
             return
         from gui.worker import BgTask
 
-        # Stop any in-flight batch before swapping the engine — the batch
+        # Stop any in-flight batch before swapping the engine - the batch
         # worker holds a reference to self._engine and must not touch it
         # after we clear it below.
         if self._batch_worker is not None:
@@ -511,7 +518,7 @@ class QueryPage(QWidget):
         if seq != self._load_seq:
             return
         if err:
-            self._load_status_label.setText(f"⚠ {err}")
+            self._load_status_label.setText(f"{err}")
             self._result_label.setText("Could not load run data.")
             return
 
@@ -521,10 +528,12 @@ class QueryPage(QWidget):
         # Background layer buttons
         self._btn_cloud.setEnabled(True)
         self._btn_cyls.setEnabled(engine.has_cyls)
+        self._btn_skel.setEnabled(engine.has_cyls)
 
         # Clear per-run caches
         self._cloud_cache  = None
         self._cyls_cache   = None
+        self._skel_cache   = None
         self._bg_meshes    = None
         self._query_meshes = None
 
@@ -540,7 +549,7 @@ class QueryPage(QWidget):
             self._crs_label.setText(f"CRS: EPSG:{engine.epsg}")
         else:
             self._lonlat_toggle.setEnabled(False)
-            self._crs_label.setText("No CRS in source LAS — X/Y only")
+            self._crs_label.setText("No CRS in source LAS - X/Y only")
 
         # Point coloring checkboxes
         self._chk_cover_sets.setEnabled(engine.has_cover_sets)
@@ -557,14 +566,14 @@ class QueryPage(QWidget):
             self._spin_z.setValue(mz)
             flags.append(f"Origin: ({mx:.1f}, {my:.1f}, {mz:.1f})")
         else:
-            flags.append("⚠ No origin saved — enter raw normalised coords")
+            flags.append("No origin saved - enter raw normalised coords")
 
         n_pts = len(engine.cloud)
         flags.append(f"{n_pts:,} pts")
         if engine.has_labels:
-            flags.append("labels ✓")
+            flags.append("labels OK")
         if engine.has_cyls:
-            flags.append("cylinders ✓")
+            flags.append("cylinders OK")
 
         self._load_status_label.setText("Loaded  ·  " + "\n".join(flags))
         self._result_label.setText(
@@ -572,7 +581,7 @@ class QueryPage(QWidget):
         )
         self.status_message.emit(f"Query ready: {run_dir.name}")
 
-        # Auto-load the point cloud — the plotter lives outside the tab widget
+        # Auto-load the point cloud - the plotter lives outside the tab widget
         # so it is always visible and safe to render to regardless of which
         # tab is active.
         self._show_cloud()
@@ -580,7 +589,7 @@ class QueryPage(QWidget):
     def _on_engine_error(self, seq: int, tb: str) -> None:
         if seq != self._load_seq:
             return
-        self._load_status_label.setText("⚠ Load failed")
+        self._load_status_label.setText("Load failed")
         self._result_label.setText(f"Load error:\n{tb[:200]}")
 
     # ── Lon/Lat toggle ────────────────────────────────────────────────────────
@@ -649,7 +658,7 @@ class QueryPage(QWidget):
     ) -> None:
         if seq != self._render_seq:
             return
-        # Build PyVista meshes on the main thread — VTK must not be touched
+        # Build PyVista meshes on the main thread - VTK must not be touched
         # from background threads while the interactive render loop is active.
         from plotting.pv_rendering import build_voxel_query_meshes
         engine = self._engine
@@ -739,7 +748,7 @@ class QueryPage(QWidget):
             self._render_combined()
             return
         # Same thread-safe pattern as _show_cloud.
-        # Subtract cloud_mean to convert cylinder starts from world→normalised space.
+        # Subtract cloud_mean to convert cylinder starts from world->normalised space.
         from gui.worker import BgTask
         raw  = self._engine.cyls
         mean = np.array(self._engine.mean, dtype=np.float64)
@@ -767,6 +776,43 @@ class QueryPage(QWidget):
         self._bg_meshes  = result["mesh_list"]
         self._render_combined()
 
+    def _show_skeleton(self) -> None:
+        """Switch background to the QSM skeleton (centrelines); keep any query overlay."""
+        if self._engine is None or not self._engine.has_cyls:
+            return
+        if self._skel_cache is not None:
+            self._bg_meshes = self._skel_cache["mesh_list"]
+            self._render_combined()
+            return
+        # Same thread-safe pattern as _show_cylinders.
+        # Subtract cloud_mean to convert cylinder starts from world->normalised space.
+        from gui.worker import BgTask
+        raw  = self._engine.cyls
+        mean = np.array(self._engine.mean, dtype=np.float64)
+        cyls_norm = dict(raw)
+        cyls_norm["start"] = raw["start"] - mean
+
+        def _build(cyls):
+            from plotting.pv_rendering import build_skeleton_meshes
+            mesh_list, starts, ends, radii, lengths = build_skeleton_meshes(cyls)
+            return {"mesh_list": mesh_list, "starts": starts, "ends": ends,
+                    "radii": radii, "lengths": lengths}
+
+        self._render_seq += 1
+        seq = self._render_seq
+        task = BgTask(_build, cyls_norm)
+        task.result.connect(lambda r: self._on_skel_ready(seq, r))
+        task.error.connect(lambda _tb: None)
+        task.start()
+        self._render_task = task
+
+    def _on_skel_ready(self, seq: int, result) -> None:
+        if seq != self._render_seq or result is None:
+            return
+        self._skel_cache = result
+        self._bg_meshes  = result["mesh_list"]
+        self._render_combined()
+
     # ── Result text ───────────────────────────────────────────────────────────
 
     def _show_result(
@@ -777,7 +823,7 @@ class QueryPage(QWidget):
         wz: "float | None",
     ) -> None:
         """Update text labels with query statistics."""
-        from gui.query_engine import VoxelQueryResult
+        from gui.query_engine import DIAMETER_CLASS_LABELS
         z_str     = f", {wz:.3f}" if wz is not None else ""
         coord_str = f"({wx:.3f}, {wy:.3f}{z_str})"
         size_str  = f"{result.voxel_size:.2f} m"
@@ -810,13 +856,27 @@ class QueryPage(QWidget):
                 lines.append(f"  … and {len(top) - 8} more")
 
         if result.cyl_count > 0:
+            cm = lambda r: r * 200.0   # radius (m) -> diameter (cm)
             lines += [
                 "",
                 f"── Branches ({result.cyl_count} cylinders) ───",
-                f"  Mean radius:  {result.mean_branch_radius * 100:.2f} cm",
-                f"  Max radius:   {result.max_branch_radius * 100:.2f} cm",
+                f"  Diameter (cm): mean {cm(result.mean_branch_radius):.2f}  "
+                f"median {cm(result.median_branch_radius):.2f}  "
+                f"p90 {cm(result.p90_branch_radius):.2f}  "
+                f"max {cm(result.max_branch_radius):.2f}",
+                f"  Length-wtd mean diam: {cm(result.length_weighted_mean_radius):.2f} cm",
                 f"  Total length: {result.total_branch_length:.2f} m",
+                "  Diameter classes (count | length m):",
             ]
+            _pretty = {"lt1cm": "<1cm", "1to2cm": "1-2cm", "2to5cm": "2-5cm",
+                       "5to10cm": "5-10cm", "gt10cm": ">10cm"}
+            for lbl, c, L in zip(DIAMETER_CLASS_LABELS,
+                                 result.diameter_class_counts,
+                                 result.diameter_class_lengths):
+                lines.append(f"    {_pretty.get(lbl, lbl):>6}: {c:4d} | {L:.2f}")
+            if result.max_branch_order is not None:
+                lines.append(f"  Branch order: max {result.max_branch_order}, "
+                             f"mean {result.mean_branch_order:.1f}")
         elif self._engine is not None and self._engine.has_cyls:
             lines += ["", "── Branches ─────────────────────",
                       "  No cylinders in this voxel"]
@@ -865,11 +925,11 @@ class QueryPage(QWidget):
     def _on_batch_run_clicked(self) -> None:
         # Pre-flight validation
         if self._engine is None or not self._engine.is_loaded:
-            self._batch_log_line("⚠ Select a run first (top bar).")
+            self._batch_log_line("Select a run first (top bar).")
             return
         if not self._engine.has_crs:
             self._batch_log_line(
-                "⚠ This run has no CRS embedded in the source LAS — "
+                "This run has no CRS embedded in the source LAS - "
                 "lon/lat conversion unavailable.  Cannot run batch."
             )
             return
@@ -877,22 +937,22 @@ class QueryPage(QWidget):
         input_csv  = self._batch_in_edit.text().strip()
         output_csv = self._batch_out_edit.text().strip()
         if not input_csv:
-            self._batch_log_line("⚠ Choose an input CSV.")
+            self._batch_log_line("Choose an input CSV.")
             return
         if not Path(input_csv).exists():
-            self._batch_log_line(f"⚠ Input CSV not found: {input_csv}")
+            self._batch_log_line(f"Input CSV not found: {input_csv}")
             return
         if not output_csv:
-            self._batch_log_line("⚠ Choose an output CSV path.")
+            self._batch_log_line("Choose an output CSV path.")
             return
         out_parent = Path(output_csv).parent
         if not out_parent.exists():
-            self._batch_log_line(f"⚠ Output folder does not exist: {out_parent}")
+            self._batch_log_line(f"Output folder does not exist: {out_parent}")
             return
 
         radii = [sb.value() for sb in self._batch_radii if sb.value() > 0]
         if not radii:
-            self._batch_log_line("⚠ At least one radius must be > 0.")
+            self._batch_log_line("At least one radius must be > 0.")
             return
 
         self._batch_log.clear()
@@ -941,18 +1001,18 @@ class QueryPage(QWidget):
     def _on_batch_stop_clicked(self) -> None:
         if self._batch_worker is not None:
             self._batch_worker.request_stop()
-            self._batch_log_line("Stop requested — finishing current row…")
+            self._batch_log_line("Stop requested - finishing current row…")
             self._batch_stop_btn.setEnabled(False)
 
     def _on_batch_finished_ok(self, output_path: str) -> None:
-        self._batch_log_line(f"✓ Done.  Wrote {output_path}")
+        self._batch_log_line(f"Done. Wrote {output_path}")
         self._batch_progress.setFormat("Done")
         self._batch_run_btn.setEnabled(True)
         self._batch_stop_btn.setEnabled(False)
         self.status_message.emit(f"Batch query finished: {output_path}")
 
     def _on_batch_failed(self, message: str) -> None:
-        self._batch_log_line("⚠ Batch failed:")
+        self._batch_log_line("Batch failed:")
         self._batch_log_line(message)
         self._batch_progress.setFormat("Failed")
         self._batch_run_btn.setEnabled(True)

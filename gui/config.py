@@ -9,6 +9,15 @@ class EcomodelConfig:
     results_folder: str = "results"
     cylinder_filename: str = "ecomodel_cylinder_data"
 
+    # ── Scalar field mapping ──────────────────────────────────────────────────
+    # Which LAS per-point dimension fills the working "intensity" column.
+    # Default "intensity"; set to e.g. "Reflectance" for RIEGL-style exports
+    # whose standard intensity field is empty.  normalize_scalar rescales the
+    # chosen field to 0-65535 so negative/fractional units work with the
+    # positive intensity thresholds.
+    scalar_field: str = "intensity"
+    normalize_scalar: bool = False
+
     # ── Tile subdivision ─────────────────────────────────────────────────────
     cube_size: float = 10.0
     meter_conversion: float = 1.0
@@ -36,7 +45,9 @@ class EcomodelConfig:
     save_clusters: bool = False
 
     # ── QSM ──────────────────────────────────────────────────────────────────
-    qsm_intensity_threshold: int = 40000
+    # 0 = no intensity pre-filter (RGI handles leaf removal). A non-zero value
+    # discards wood on reflectance-valued scans where wood is not high-intensity.
+    qsm_intensity_threshold: int = 0
     save_leaf_removal_output: bool = False
     run_qsm: bool = True
     run_leaf_removal: bool = True
@@ -74,3 +85,42 @@ class EcomodelConfig:
     use_checkpoint: bool = False
     save_checkpoint: bool = False
     checkpoint_resume_file: str = ""   # full path to .pickle file to resume from
+
+    # ── Pipeline mode ─────────────────────────────────────────────────────────
+    pipeline_type: str = "full"        # "full" | "lite"
+
+    # ── Debug mode ────────────────────────────────────────────────────────────
+    debug_mode: bool = False  # save intermediates at each step + auto-report
+
+    # ── Lite: general ─────────────────────────────────────────────────────────
+    lite_intensity_threshold: int = 0
+
+    # ── Lite: CSF ground removal (different param space from full-pipeline CSF) ──
+    lite_csf_cloth_resolution: float = 2.0
+    lite_csf_class_threshold: float = 0.5
+    lite_csf_iterations: int = 500
+    lite_csf_remove_underground: bool = True
+
+    # ── Lite: noise removal ───────────────────────────────────────────────────
+    lite_noise_voxel_size: float = 0.25
+    lite_noise_min_points: int = 100
+
+    # ── Lite: QSM cover sets (different defaults from full-pipeline cover sets) ─
+    lite_patch_diam1: float = 0.025
+    lite_ball_rad1: float = 0.03
+    lite_nmin1: int = 5
+    lite_patch_diam2_min: float = 0.05
+    lite_patch_diam2_max: float = 0.08
+    lite_ball_rad2: float = 0.09
+    # RGI params are shared with the full pipeline (same library, same defaults)
+
+    # ── Lite: instance segmenter ──────────────────────────────────────────────
+    lite_segmenter_type: str = "scanline"   # "scanline" | "treelearn"
+    treelearn_config_path: str = ""         # path to TreeLearn YAML config
+    treelearn_use_gpu: bool = True          # use CUDA; False = CPU (very slow)
+
+    # ── Lite: QSM method ──────────────────────────────────────────────────────
+    lite_qsm_method: str = "treeqsm"        # "treeqsm" | "smartqsm"
+    smartqsm_dir: str = ""
+    smartqsm_python: str = ""
+    smartqsm_config: str = ""

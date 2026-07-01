@@ -34,11 +34,12 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from gui.config import EcomodelConfig
+from gui.query_engine import DIAMETER_CLASS_LABELS
 
 
 # ── Global task registry ──────────────────────────────────────────────────────
 # Keeps every running BgTask object alive (strong Python reference) so that
-# the GC never destroys a task—and its QThread—while the thread is still
+# the GC never destroys a task-and its QThread-while the thread is still
 # running.  Tasks remove themselves from this set when their thread finishes.
 
 _live_tasks: set = set()
@@ -92,15 +93,15 @@ class BgTask(QObject):
 
     Signals
     -------
-    result(object)  — callable's return value on success.
-    error(str)      — formatted traceback on exception.
-    finished()      — always emitted last (success or error).
+    result(object)  - callable's return value on success.
+    error(str)      - formatted traceback on exception.
+    finished()      - always emitted last (success or error).
 
     Cancellation
     ------------
-    cancel()  — suppress result/error emission; the function still runs to
+    cancel()  - suppress result/error emission; the function still runs to
                 completion (numpy / file-IO cannot be interrupted).
-    wait(ms)  — block until the thread exits; use in closeEvent().
+    wait(ms)  - block until the thread exits; use in closeEvent().
     """
 
     result   = Signal(object)
@@ -132,8 +133,8 @@ class BgTask(QObject):
 class EcomodelWorker(QObject):
     """Runs the ecomodel pipeline off the GUI thread."""
 
-    log         = Signal(str)           # Plain-text log messages → log panel
-    progress    = Signal(int, int, str) # (current_step, total_steps, label) → progress bar
+    log         = Signal(str)           # Plain-text log messages -> log panel
+    progress    = Signal(int, int, str) # (current_step, total_steps, label) -> progress bar
     finished    = Signal(object)        # Ecomodel instance on success, None if stopped
     error       = Signal(str)           # Full traceback string on unexpected exception
     tile_update = Signal(str, str, int, str)  # (tile_name, status, cyl_count, output_path)
@@ -145,12 +146,15 @@ class EcomodelWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        """Entry point called by QThread.started — do not call directly."""
+        """Entry point called by QThread.started - do not call directly."""
         # Import inside run() so the heavy ecomodel import happens on the
         # worker thread, not the GUI thread, keeping startup instant.
-        from gui.pipeline import PipelineStopped, run_ecomodel_pipeline
+        if getattr(self._config, "pipeline_type", "full") == "lite":
+            from gui.pipeline_lite import PipelineStopped, run_ecomodel_lite_pipeline as _run
+        else:
+            from gui.pipeline import PipelineStopped, run_ecomodel_pipeline as _run
         try:
-            result = run_ecomodel_pipeline(
+            result = _run(
                 config=self._config,
                 log_callback=self.log.emit,
                 progress_callback=self.progress.emit,
@@ -190,10 +194,10 @@ class BatchQueryWorker(QObject):
 
     Signals
     -------
-    log           — free-form status lines for the GUI log pane
-    progress(i,n,obs_id)  — after each row is written
-    finished_ok(path)     — on success; path is the output CSV
-    failed(str)           — on exception; string is a user-facing message
+    log           - free-form status lines for the GUI log pane
+    progress(i,n,obs_id)  - after each row is written
+    finished_ok(path)     - on success; path is the output CSV
+    failed(str)           - on exception; string is a user-facing message
     """
 
     log         = Signal(str)
@@ -201,7 +205,7 @@ class BatchQueryWorker(QObject):
     finished_ok = Signal(str)
     failed      = Signal(str)
 
-    # Per-radius metric column order — kept in one place so the header and
+    # Per-radius metric column order - kept in one place so the header and
     # per-row emission cannot drift apart.
     _METRIC_COLS = (
         "point_count",
@@ -210,8 +214,14 @@ class BatchQueryWorker(QObject):
         "n_segments",
         "cyl_count",
         "mean_branch_radius",
+        "median_branch_radius",
+        "p90_branch_radius",
+        "lw_mean_radius",
         "total_branch_length",
-    )
+        "max_branch_order",
+        "mean_branch_order",
+    ) + tuple(f"n_d_{lbl}" for lbl in DIAMETER_CLASS_LABELS) \
+      + tuple(f"len_d_{lbl}" for lbl in DIAMETER_CLASS_LABELS)
 
     def __init__(
         self,
@@ -245,16 +255,26 @@ class BatchQueryWorker(QObject):
     @staticmethod
     def _metrics_for(res) -> list:
         """Return cell values in the order declared by _METRIC_COLS."""
+        def f(x):
+            return f"{x:.6f}" if x is not None else ""
+        n = len(DIAMETER_CLASS_LABELS)
+        counts = res.diameter_class_counts or [0] * n
+        lengths = res.diameter_class_lengths or [0.0] * n
         return [
             res.point_count,
             res.tree_point_count,
             f"{res.veg_cover:.6f}" if res.point_count else 0,
             len(res.segment_ids),
             res.cyl_count,
-            (f"{res.mean_branch_radius:.6f}"
-             if res.mean_branch_radius is not None else ""),
-            (f"{res.total_branch_length:.6f}"
-             if res.total_branch_length is not None else ""),
+            f(res.mean_branch_radius),
+            f(res.median_branch_radius),
+            f(res.p90_branch_radius),
+            f(res.length_weighted_mean_radius),
+            f(res.total_branch_length),
+            res.max_branch_order if res.max_branch_order is not None else "",
+            f(res.mean_branch_order),
+            *counts,
+            *[f"{x:.6f}" for x in lengths],
         ]
 
     @Slot()
@@ -276,7 +296,7 @@ class BatchQueryWorker(QObject):
             has_h_col = any("height_agl" in (r or {}) for r in rows)
             if not has_h_col:
                 self.log.emit(
-                    f"[info] CSV has no 'height_agl' column — using "
+                    f"[info] CSV has no 'height_agl' column - using "
                     f"default {self._default_h_agl} m for every row.\n"
                 )
 
@@ -301,7 +321,7 @@ class BatchQueryWorker(QObject):
                         lat = float(row["lat"])
                     except (KeyError, TypeError, ValueError) as exc:
                         self.log.emit(
-                            f"[skip] row {i} ({obs_id}): bad lon/lat — {exc}\n"
+                            f"[skip] row {i} ({obs_id}): bad lon/lat - {exc}\n"
                         )
                         continue
 

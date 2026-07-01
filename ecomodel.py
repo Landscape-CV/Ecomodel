@@ -19,6 +19,7 @@ from TreeQSMSteps.relative_size import relative_size
 from Utils.TreeSegmentation import segment_point_cloud
 from TreeQSMSteps.cylinders import cylinders
 from TreeQSMSteps.point_model_distance import point_model_distance
+from Utils.tree_metrics import compute_tree_metrics
 from Utils.define_input import define_input
 from plotting.cylinders_line_plotting import cylinders_line_plotting
 from plotting.point_cloud_plotting import point_cloud_plotting
@@ -136,20 +137,41 @@ class Ecomodel:
         print("[DEBUG] normalize_raw_tiles: done.", flush=True)
 
     def reset_terrain(self):
-        print("[DEBUG] reset_terrain: starting...", flush=True)
+        """
+        Restore each tile's cloud / point_data to its pre-normalisation
+        coordinates by re-applying the per-tile terrain model.
+
+        Empty-tile contract: subdivided tiles do not carry a
+        ``terrain_model`` or an ``original_data`` attribute (those live only
+        on the raw pre-subdivision tile), so the restore branch is a no-op
+        for them.  That is correct behaviour for sub-tiles whose cloud is
+        still populated, but it means a sub-tile that ``segment_trees``
+        emptied stays empty.  When such an empty-cloud sub-tile is
+        encountered we log a warning so the silent skip is visible.  See
+        ``Docs/RESEARCH_DIRECTION.md`` section 3.4.
+        """
+        logger.debug("reset_terrain: starting...")
         if self.tiles is None:
-            print("[DEBUG] reset_terrain: no tiles, skipping.", flush=True)
+            logger.debug("reset_terrain: no tiles, skipping.")
             return
 
         for i, tile in enumerate(self.tiles.flatten()):
             if tile is None or not hasattr(tile, "terrain_model"):
                 continue
             if tile.terrain_model is not None and hasattr(tile, "original_data"):
-                print(f"[DEBUG] reset_terrain: restoring tile {i}...", flush=True)
+                logger.debug("reset_terrain: restoring tile %d...", i)
                 tile.cloud = tile.original_data[:, 0:3] - self.mean
                 tile.point_data = tile.original_data
                 tile.point_data[:, 0:3] = tile.point_data[:, 0:3] - self.mean
-        print("[DEBUG] reset_terrain: done.", flush=True)
+            elif tile.cloud is None or len(tile.cloud) == 0:
+                # Subdivided + emptied-by-segmentation: silently skipped before,
+                # explicit now so the chain back to segment_trees is traceable.
+                logger.warning(
+                    "reset_terrain: sub-tile %d has no terrain_model and an "
+                    "empty cloud - segment_trees likely found no trees in "
+                    "this sub-cube.", i,
+                )
+        logger.debug("reset_terrain: done.")
 
     def filter_ground(self,tile_list, band_size = 0.1, threshold = 20,offset = 0.2,remove_under_ground = True, write_cloth=False):
         print("[DEBUG] filter_ground: starting CSF...", flush=True)
@@ -327,11 +349,21 @@ class Ecomodel:
                 min_points (int): Minimum number of points in a cluster.
         Returns:
                 numpy.ndarray: Clustered point cloud, shape (n_points, 3).
+
+        Empty-tile contract: when a sub-tile has no points that survive the
+        final ``segment_labels > -2`` mask (i.e. no valid tree segments were
+        found in that sub-cube), this function logs a warning before
+        emptying ``tile.cloud``.  Downstream stages
+        (``get_qsm_segments_rgi``, ``recombine_tiles``) detect and skip the
+        resulting empty tile; this warning is what makes the chain of skips
+        attributable to its true cause.  See
+        ``Docs/RESEARCH_DIRECTION.md`` section 3.4.
         """
 
-        # inputs = {'PatchDiam1': 0.08, 'BallRad1':.08, 'nmin1': 15}
-        inputs = {'PatchDiam1': 0.15, 'BallRad1':.15, 'nmin1': 25}
-        # inputs = {'PatchDiam1': 0.1, 'BallRad1':.125, 'nmin1': 5}
+        # inputs = {'PatchDiam1': 0.08, 'BallRad1':.08, 'nmin1': 15}  # Missouri data
+
+        inputs = {'PatchDiam1': 0.15, 'BallRad1':.15, 'nmin1': 25}  # dense full-res scan
+        #inputs = {'PatchDiam1': 0.15, 'BallRad1':.2, 'nmin1': 5}  # test – downsampled island
 
         cover_set_adjust = 0
         for i,tile in enumerate(self.tiles.flatten(), start =1):
@@ -348,6 +380,10 @@ class Ecomodel:
             # tile.segment_labels = tile.segment_labels[intensity_mask]
             # tile.cluster_labels = tile.cluster_labels[intensity_mask]
 
+            # Skip empty sub-tiles; cover_sets crashes on zero-row input.
+            if len(tile.cloud) == 0:
+                logger.warning("segment_trees: sub-tile %d has no points, skipping.", i)
+                continue
 
             logger.info("Create Cover Sets")
             print(f"[DEBUG] segment_trees tile {i}: {len(tile.cloud)} points, creating cover sets...", flush=True)
@@ -423,6 +459,18 @@ class Ecomodel:
             # tile.to_xyz(f"{self.results_folder}/post_segmentation.xyz", True)
             mask = tile.segment_labels >-2#filters out points that could not be connected, ideal will segment better and this will be uneccesary
             print("UNIQUE LABELS", np.unique(tile.segment_labels))
+            # If no points survive the mask the sub-tile is about to become a
+            # zero-row "zombie" that downstream stages (reset_terrain,
+            # get_qsm_segments_rgi, recombine_tiles) have to silently skip.
+            # Logging here surfaces the root cause - "no valid tree segments
+            # in this sub-cube" - rather than letting it surface six steps
+            # later as a cryptic numpy error inside recombine.  See
+            # Docs/RESEARCH_DIRECTION.md section 3.4.
+            if mask.sum() == 0:
+                logger.warning(
+                    "segment_trees: sub-tile %d has no valid tree segments "
+                    "after segment_point_cloud; cloud will be emptied.", i,
+                )
             # for label in np.unique(tile.segment_labels):
             #     # if label < 0:
             #     #     continue
@@ -450,7 +498,7 @@ class Ecomodel:
         # self.save_point_cloud(f"data_{arguments}", )
         logger.info("Tree segmentation finished.")
 
-    def get_qsm_segments(self,intensity_threshold = 40000):
+    def get_qsm_segments(self,intensity_threshold = 0):
         """
         Get the modeled cylinder and QSM segments from the point cloud P.
         Parameters:
@@ -787,10 +835,17 @@ class Ecomodel:
 
 
 
-    def get_qsm_segments_rgi(self, intensity_threshold=40000,save_leaf_removal_output=False):
+    def get_qsm_segments_rgi(self, intensity_threshold=0,save_leaf_removal_output=False):
         """
         Same as get_qsm_segments(), but integrates classify_wood_leaf() from SegmentRGI for
         leaf/wood separation before QSM processing.
+
+        Empty-tile contract: sub-tiles whose ``cloud`` was emptied by
+        ``segment_trees`` (no valid tree segments found in the sub-cube) are
+        skipped with a logged warning rather than silently passed through.
+        The recombine step relies on this warning to attribute the source of
+        any zombie empty tiles it later filters out.  See
+        ``Docs/RESEARCH_DIRECTION.md`` section 3.4.
         """
 
         max_segment = 0
@@ -939,12 +994,17 @@ class Ecomodel:
                 tile.cylinder_radii = np.append(tile.cylinder_radii,cylinder["radius"])
                 tile.cylinder_axes = np.concatenate([tile.cylinder_axes,cylinder["axis"]])
                 tile.cylinder_lengths = np.append(tile.cylinder_lengths,cylinder["length"])
+                tile.cylinder_branchorders = np.append(tile.cylinder_branchorders, cylinder.get("BranchOrder", np.zeros(len(cylinder["radius"]))))
+                # Per-tree QSM attributes (fails soft; one bad tree never aborts the tile).
+                _tm = compute_tree_metrics(cylinder, tree_cloud, qsm_input, segment)
+                if _tm is not None:
+                    tile.tree_metrics.append(_tm)
 
             logger.info(f"Time to create QSMs in tile {i}: {time.time() - start:.2f} seconds")
             # tile.to_xyz(f"{self.results_folder}/after_leaf_removal_{i}.xyz", True, True)
 
 
-    def get_qsm_segments_rgi_no_leaf_removal(self, intensity_threshold=40000,save_leaf_removal_output=False):
+    def get_qsm_segments_rgi_no_leaf_removal(self, intensity_threshold=0,save_leaf_removal_output=False):
         """
         Same as get_qsm_segments(), but integrates classify_wood_leaf() from SegmentRGI for
         leaf/wood separation before QSM processing.
@@ -1081,6 +1141,7 @@ class Ecomodel:
                 tile.cylinder_radii = np.append(tile.cylinder_radii,cylinder["radius"])
                 tile.cylinder_axes = np.concatenate([tile.cylinder_axes,cylinder["axis"]])
                 tile.cylinder_lengths = np.append(tile.cylinder_lengths,cylinder["length"])
+                tile.cylinder_branchorders = np.append(tile.cylinder_branchorders, cylinder.get("BranchOrder", np.zeros(len(cylinder["radius"]))))
 
             logger.info(f"Time to create QSMs in tile {i}: {time.time() - start:.2f} seconds")
             # tile.to_xyz(f"{self.results_folder}/after_leaf_removal_{i}.xyz", True, True)
@@ -1192,6 +1253,7 @@ class Ecomodel:
                 tile.cylinder_radii = np.append(tile.cylinder_radii,cylinder["radius"])
                 tile.cylinder_axes = np.concatenate([tile.cylinder_axes,cylinder["axis"]])
                 tile.cylinder_lengths = np.append(tile.cylinder_lengths,cylinder["length"])
+                tile.cylinder_branchorders = np.append(tile.cylinder_branchorders, cylinder.get("BranchOrder", np.zeros(len(cylinder["radius"]))))
 
 
                 # TODO: Get the same output saving as the other get_qsm_segments functions
@@ -1230,6 +1292,10 @@ class Ecomodel:
         Returns:
                 numpy.ndarray: Adjusted point cloud, shape (n_points, 3).
         """
+        # Nothing calls this. If you ever want to: it adds the whole mean back,
+        # but normalize_raw_tiles only takes off XY, so Z would end up shifted
+        # twice. get_all_cylinders already does the world-frame conversion at
+        # save time.
         if self.tiles is None:
             return
 
@@ -1245,7 +1311,7 @@ class Ecomodel:
             tile.max_y = float(tile.cloud[:, 1].max())
             tile.max_z = float(tile.cloud[:, 2].max())
             tile.cylinder_starts = tile.cylinder_starts + self.mean
-            tile.cylinder_axes = tile.cylinder_axes + self.mean
+            # axes are unit directions, not positions, so don't shift them
 
     def get_voxel(self,min_x,min_y,min_z,voxel_size=1,fidelity =.3):
         """
@@ -1306,7 +1372,9 @@ class Ecomodel:
         # mean_x_y = np.array([0, 0, self.mean[2]])
         # mean_x_y = np.array([0, 0, 0])
         mean_x_y = np.array([self.mean[0], self.mean[1], self.mean[2]])
-        cylinder_data = np.empty((0,8))
+        cylinder_data = np.empty((0,9))   # 8 geometry cols + branch order
+        all_tm = []
+        tree_id_global = 0
         logger.info("Mean X Y (use this in view_cylinders.py): %s", mean_x_y)
         for i,tile in enumerate(self._raw_tiles, start=1):
             if tile is None:
@@ -1326,11 +1394,24 @@ class Ecomodel:
 
             logger.info("Total Number of cylinders in tile: %d", len(cylinder_radii))
 
-            tile_data = np.concatenate((cylinder_starts, cylinder_radii.reshape(-1, 1), cylinder_axes, cylinder_lengths.reshape(-1, 1)), axis=1)
+            # 9th column = branch order (zeros if a tile predates this field).
+            _bo = getattr(tile, "cylinder_branchorders", None)
+            _bo = (np.asarray(_bo) if _bo is not None and len(_bo) == len(cylinder_radii)
+                   else np.zeros(len(cylinder_radii)))
+            tile_data = np.concatenate((cylinder_starts, cylinder_radii.reshape(-1, 1), cylinder_axes, cylinder_lengths.reshape(-1, 1), _bo.reshape(-1, 1)), axis=1)
 
             cylinder_data = np.vstack((cylinder_data, tile_data))
 
+            # Gather per-tree metrics with a globally-unique tree id + tile tag.
+            for _tm in getattr(tile, "tree_metrics", []):
+                _tm = dict(_tm)
+                _tm["tree_id"] = tree_id_global
+                _tm["tile"] = f"tile_{i}"
+                tree_id_global += 1
+                all_tm.append(_tm)
+
         np.savetxt(f"{self.results_folder}/{filename}.txt", cylinder_data)
+        self.all_tree_metrics = all_tm
 
         return mean_x_y
 
@@ -1514,41 +1595,92 @@ class Ecomodel:
 
     def recombine_tiles(self):
         """
-        Inverse of subdivide_tiles, recombines the tiles into a single tile.
+        Inverse of subdivide_tiles. Recombines the per-sub-cube tiles into a
+        single tile whose ``cloud``, ``point_data``, segmentation arrays and
+        cylinder arrays span the whole plot.
+
+        Empty-tile contract
+        -------------------
+        ``segment_trees`` can legitimately produce sub-tiles with zero-row
+        ``cloud`` arrays when no valid tree segments are found in that
+        sub-cube (sparse patch, plot edge, no trees above base_height).
+        ``get_qsm_segments_rgi`` silently skips those tiles, so by the time
+        recombine runs they look like valid Tile objects but have no points
+        to contribute. This function:
+
+        * drops empty-cloud tiles from the concatenation (with a logged warning),
+        * uses the safe ``_concat_if_nonempty`` helper for every per-tile field
+          so a single empty array cannot poison the result, and
+        * raises a clear ``RuntimeError`` with a remediation hint when every
+          sub-tile is empty - instead of the cryptic numpy
+          ``zero-size array to reduction operation minimum`` error.
+
+        See ``Docs/RESEARCH_DIRECTION.md`` section 3.4 for the broader rationale.
         """
 
         if self.tiles is None:
             raise RuntimeError("recombine_tiles() called before tiles were created.")
 
+        def _concat_if_nonempty(arrays):
+            filled = [a for a in arrays if a is not None and len(a) > 0]
+            if filled:
+                return np.concatenate(filled)
+            # Preserve column count from a source array so 2-D fields like
+            # cylinder_starts stay (0, 3) rather than collapsing to (0,).
+            for a in arrays:
+                if a is not None:
+                    return np.empty((0,) + a.shape[1:], dtype=np.float32)
+            return np.empty((0,), dtype=np.float32)
+
         tiles = self.tiles.flatten()
         valid_tiles = []
-        for tile in tiles:
+        empty_skipped = 0
+        for i, tile in enumerate(tiles):
             if tile is None:
                 continue
             tile.numpy()
+            # Drop zombie tiles whose cloud was emptied upstream.  Concatenating
+            # them in is harmless when other tiles have points, but it inflates
+            # the dtype/shape inference cost and (if *every* tile is empty)
+            # silently produces a zero-row result that crashes min/max below.
+            if tile.cloud is None or len(tile.cloud) == 0:
+                logger.warning(
+                    "recombine_tiles: skipping sub-tile %d with empty cloud "
+                    "(segment_trees found no trees in this sub-cube).", i,
+                )
+                empty_skipped += 1
+                continue
             valid_tiles.append(tile)
 
         if not valid_tiles:
+            if empty_skipped:
+                raise RuntimeError(
+                    f"recombine_tiles: all {empty_skipped} sub-tile(s) were "
+                    "empty after segmentation.  segment_trees found no trees "
+                    "in any sub-cube.  Try a larger cube_size, a lower "
+                    "segment_intensity_threshold, or check that the input "
+                    "cloud contains trees above the segmentation base_height "
+                    "(0.65 m default)."
+                )
             raise RuntimeError("No valid tiles available to recombine.")
 
         base_tile = valid_tiles[0]
-        base_tile.cloud = np.concatenate([tile.cloud for tile in valid_tiles])
-        base_tile.point_data = np.concatenate([tile.point_data for tile in valid_tiles])
-        base_tile.segment_labels = np.concatenate([tile.segment_labels for tile in valid_tiles])
-        base_tile.cover_sets = np.concatenate([tile.cover_sets for tile in valid_tiles])
-        base_tile.cluster_labels = np.concatenate([tile.cluster_labels for tile in valid_tiles])
-        base_tile.trunk_points = np.concatenate([tile.trunk_points for tile in valid_tiles])
-
-        def _concat_if_nonempty(arrays):
-            filled = [a for a in arrays if a is not None and len(a) > 0]
-            return np.concatenate(filled) if filled else np.empty((0,), dtype=np.float32)
+        base_tile.cloud          = _concat_if_nonempty([t.cloud          for t in valid_tiles])
+        base_tile.point_data     = _concat_if_nonempty([t.point_data     for t in valid_tiles])
+        base_tile.segment_labels = _concat_if_nonempty([t.segment_labels for t in valid_tiles])
+        base_tile.cover_sets     = _concat_if_nonempty([t.cover_sets     for t in valid_tiles])
+        base_tile.cluster_labels = _concat_if_nonempty([t.cluster_labels for t in valid_tiles])
+        base_tile.trunk_points   = _concat_if_nonempty([t.trunk_points   for t in valid_tiles])
 
         base_tile.cylinder_starts  = _concat_if_nonempty([t.cylinder_starts  for t in valid_tiles])
         base_tile.cylinder_axes    = _concat_if_nonempty([t.cylinder_axes    for t in valid_tiles])
         base_tile.cylinder_lengths = _concat_if_nonempty([t.cylinder_lengths for t in valid_tiles])
         base_tile.cylinder_radii   = _concat_if_nonempty([t.cylinder_radii   for t in valid_tiles])
+        base_tile.cylinder_branchorders = _concat_if_nonempty([getattr(t, "cylinder_branchorders", np.empty(0)) for t in valid_tiles])
         base_tile.branch_labels    = _concat_if_nonempty([t.branch_labels    for t in valid_tiles])
         base_tile.branch_orders    = _concat_if_nonempty([t.branch_orders    for t in valid_tiles])
+        # Per-tree metrics are a list (not an array) - flatten across sub-tiles.
+        base_tile.tree_metrics     = [tm for t in valid_tiles for tm in getattr(t, "tree_metrics", [])]
 
 
 
@@ -1556,19 +1688,34 @@ class Ecomodel:
 
         self._raw_tiles = [base_tile]
         self.tiles = None
-        self.min_x = float(base_tile.cloud[:,0].min())+self.mean[0]
-        self.min_y = float(base_tile.cloud[:,1].min())+self.mean[1]
-        self.min_z = float(base_tile.cloud[:,2].min())+self.mean[2]
-        self.max_x = float(base_tile.cloud[:,0].max())+self.mean[0]
-        self.max_y = float(base_tile.cloud[:,1].max())+self.mean[1]
-        self.max_z = float(base_tile.cloud[:,2].max())+self.mean[2]
+
+        # The empty-tile filter above should make this impossible, but guard
+        # anyway so a future change can't reintroduce the original numpy
+        # "zero-size array to reduction" crash silently.
+        if base_tile.cloud is None or len(base_tile.cloud) == 0:
+            raise RuntimeError(
+                "recombine_tiles: combined cloud is empty after concatenation. "
+                "This should not be reachable given the upstream filter; "
+                f"empty_skipped={empty_skipped}, valid_tiles={len(valid_tiles)}."
+            )
+
+        self.min_x = float(base_tile.cloud[:, 0].min()) + self.mean[0]
+        self.min_y = float(base_tile.cloud[:, 1].min()) + self.mean[1]
+        self.min_z = float(base_tile.cloud[:, 2].min()) + self.mean[2]
+        self.max_x = float(base_tile.cloud[:, 0].max()) + self.mean[0]
+        self.max_y = float(base_tile.cloud[:, 1].max()) + self.mean[1]
+        self.max_z = float(base_tile.cloud[:, 2].max()) + self.mean[2]
 
     @staticmethod
-    def combine_las_files(folder,ecomodel, intensity_threshold = 0) -> 'Ecomodel':
+    def combine_las_files(folder,ecomodel, intensity_threshold = 0,
+                          scalar_field = "intensity", normalize_scalar = False) -> 'Ecomodel':
         """
         Combine multiple LAS or LAZ files into a single point cloud.
         Parameters:
                 folder (str): Path to the folder containing pre-tiled LAS or LAZ files.
+                scalar_field (str): LAS dimension to use as the intensity column
+                    (default "intensity"; e.g. "Reflectance" for RIEGL exports).
+                normalize_scalar (bool): rescale that field to 0-65535.
         Returns:
                 np.array: Combined point cloud.
 
@@ -1587,7 +1734,9 @@ class Ecomodel:
             file = files[0]
             logger.info(f"Loading file: {file}")
             filepath = os.path.join(folder, file)
-            point_cloud, point_data = Utils.load_point_cloud(filepath, intensity_threshold, True)
+            point_cloud, point_data = Utils.load_point_cloud(
+                filepath, intensity_threshold, True,
+                scalar_field=scalar_field, normalize_scalar=normalize_scalar)
             if point_cloud is not None:
                 ecomodel.add_tile(Tile(point_cloud, point_data, True))
             logger.info("Finished loading LAS/LAZ file.")
@@ -1598,7 +1747,9 @@ class Ecomodel:
             logger.info(f"Loading file {i}/{len(files)}: {file}")
             filepath = os.path.join(folder, file)
 
-            point_cloud, point_data = Utils.load_point_cloud(os.path.join(folder, file), intensity_threshold,True)
+            point_cloud, point_data = Utils.load_point_cloud(
+                os.path.join(folder, file), intensity_threshold, True,
+                scalar_field=scalar_field, normalize_scalar=normalize_scalar)
             if point_cloud is not None:
                 ecomodel.add_tile(Tile(point_cloud,point_data,True))
 
@@ -1814,6 +1965,8 @@ class Tile:
         self.cylinder_radii = np.array([])
         self.cylinder_axes = np.empty((0,3))
         self.cylinder_lengths = np.array([])
+        self.cylinder_branchorders = np.array([])
+        self.tree_metrics = []
         self.branch_labels = np.array([])
         self.branch_orders = np.array([])
 
@@ -1832,6 +1985,8 @@ class Tile:
         self.cylinder_radii = np.array([])
         self.cylinder_axes = np.empty((0,3))
         self.cylinder_lengths = np.array([])
+        self.cylinder_branchorders = np.array([])
+        self.tree_metrics = []
     def to_xyz(self, file_path, with_clusters = False, with_intensity = False):
         """
         Save the point cloud to a XYZ file.

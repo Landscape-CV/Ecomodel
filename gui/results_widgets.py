@@ -19,13 +19,13 @@ ResultsPage
 
 Threading model
 ---------------
-  BgTask(_bg_load_run, run_dir)        → loads .npy files
-  BgTask(_bg_scan_runs, folder)        → scans results folder
-  BgTask(_bg_build_cloud_meshes, ...)  → builds pv.PolyData for point cloud
-  BgTask(_bg_build_segment_meshes, ...)→ builds pv.PolyData for segments
-  BgTask(_bg_cylinders, cyl_path)      → loadtxt + builds cylinder meshes
-  BgTask(_bg_metrics, cyl_path)        → loadtxt + builds matplotlib Figure
-  BgTask(_bg_voxel_meshes, ...)        → builds pv.PolyData for voxel query
+  BgTask(_bg_load_run, run_dir)        -> loads .npy files
+  BgTask(_bg_scan_runs, folder)        -> scans results folder
+  BgTask(_bg_build_cloud_meshes, ...)  -> builds pv.PolyData for point cloud
+  BgTask(_bg_build_segment_meshes, ...)-> builds pv.PolyData for segments
+  BgTask(_bg_cylinders, cyl_path)      -> loadtxt + builds cylinder meshes
+  BgTask(_bg_metrics, cyl_path)        -> loadtxt + builds matplotlib Figure
+  BgTask(_bg_voxel_meshes, ...)        -> builds pv.PolyData for voxel query
 
 All bg functions are module-level free functions (not methods) so they can
 be pickled / referenced cleanly from the thread.
@@ -40,6 +40,7 @@ import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -63,6 +64,13 @@ try:
 except ImportError:
     _PYVISTAQT_AVAILABLE = False
     QtInteractor = None  # type: ignore[assignment,misc]
+
+
+# Cap points rendered in the Results page.  The full point_cloud.npy stays on
+# disk for the Query page (which needs every point for accurate voxel queries);
+# this only limits what the 3-D viewer builds, so tens-of-millions-of-point
+# tiles do not hang the GUI.
+_DISPLAY_CAP = 2_000_000
 
 
 # ── Background worker free functions ─────────────────────────────────────────
@@ -99,21 +107,21 @@ def _bg_load_run(run_dir: Path) -> dict:
     npy = run_dir / POINT_CLOUD_FILE
     if npy.exists():
         try:
-            cloud = np.load(npy)
+            cloud = np.load(npy, mmap_mode="r")
         except Exception:
             pass
 
     lbl = run_dir / SEGMENT_LABELS_FILE
     if lbl.exists():
         try:
-            labels = np.load(lbl)
+            labels = np.load(lbl, mmap_mode="r")
         except Exception:
             pass
 
     cov = run_dir / COVER_SETS_FILE
     if cov.exists():
         try:
-            cover_sets = np.load(cov)
+            cover_sets = np.load(cov, mmap_mode="r")
         except Exception:
             pass
 
@@ -137,6 +145,22 @@ def _bg_load_run(run_dir: Path) -> dict:
         if txts:
             cyl_path = txts[0]
 
+    # Subsample for display only; the full files stay on disk for the Query page.
+    # cloud / labels / cover_sets / fields are strided by the same step so the
+    # segment view stays row-for-row aligned.
+    n_full = len(cloud) if cloud is not None else 0
+    step = max(1, -(-n_full // _DISPLAY_CAP)) if n_full else 1
+
+    def _materialise(arr):
+        if arr is None:
+            return None
+        return np.asarray(arr[::step]) if len(arr) == n_full else np.asarray(arr)
+
+    cloud = _materialise(cloud)
+    labels = _materialise(labels)
+    cover_sets = _materialise(cover_sets)
+    point_fields = {k: np.asarray(v[::step]) for k, v in point_fields.items()}
+
     return {
         "cloud": cloud,
         "labels": labels,
@@ -159,19 +183,26 @@ def _bg_build_segment_meshes(cloud, cover, labels, view_mode) -> list:
     return mesh_list
 
 
-def _bg_cylinders(cyl_path: Path) -> "dict | None":
-    """Load cylinder .txt and build all render meshes.  Returns dict or None."""
+def _bg_cylinders(cyl_path: Path, mean=None) -> "dict | None":
+    """Load cylinder .txt and build all render meshes.  Returns dict or None.
+
+    ``mean`` (cloud_mean) shifts the world-coordinate cylinders into the
+    normalised frame of the point-cloud snapshot so the two overlay correctly.
+    """
     try:
         data = np.loadtxt(cyl_path)
     except Exception:
         return None
     if data.ndim == 1:
         data = data.reshape(1, -1)
-    if data.ndim != 2 or data.shape[1] != 8 or data.shape[0] == 0:
+    if data.ndim != 2 or data.shape[1] < 8 or data.shape[0] == 0:
         return None
 
+    start = data[:, 0:3]
+    if mean is not None:
+        start = start - np.asarray(mean, dtype=float)
     cyls = {
-        "start":  data[:, 0:3],
+        "start":  start,
         "radius": data[:, 3],
         "axis":   data[:, 4:7],
         "length": data[:, 7],
@@ -188,95 +219,241 @@ def _bg_cylinders(cyl_path: Path) -> "dict | None":
     }
 
 
-def _bg_metrics(cyl_path: Path) -> Figure:
-    """Load cylinder .txt and build a matplotlib metrics Figure."""
-    fig = Figure(figsize=(10, 7), tight_layout=True)
+def _bg_skeleton(cyl_path: Path, mean=None) -> "dict | None":
+    """Load cylinder .txt and build the QSM skeleton (centrelines).  Returns dict or None.
+
+    ``mean`` (cloud_mean) shifts the world-coordinate cylinders into the
+    normalised frame of the point-cloud snapshot so the two overlay correctly.
+    """
+    try:
+        data = np.loadtxt(cyl_path)
+    except Exception:
+        return None
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    if data.ndim != 2 or data.shape[1] < 8 or data.shape[0] == 0:
+        return None
+
+    start = data[:, 0:3]
+    if mean is not None:
+        start = start - np.asarray(mean, dtype=float)
+    cyls = {
+        "start":  start,
+        "radius": data[:, 3],
+        "axis":   data[:, 4:7],
+        "length": data[:, 7],
+    }
+    if data.shape[1] >= 9:
+        cyls["branch_order"] = data[:, 8]
+
+    from plotting.pv_rendering import build_skeleton_meshes
+    mesh_list, starts, ends, radii, lengths = build_skeleton_meshes(cyls)
+    return {
+        "mesh_list": mesh_list,
+        "starts": starts,
+        "ends":   ends,
+        "radii":  radii,
+        "lengths": lengths,
+    }
+
+
+def _dim_cloud_layer(cloud) -> list:
+    """A faint grey point-cloud layer for context behind the QSM overlay."""
+    if cloud is None or len(cloud) == 0:
+        return []
+    import pyvista as pv
+    pts = pv.PolyData(np.asarray(cloud[:, :3], dtype=np.float32))
+    return [(pts, dict(color="#9e9e9e", opacity=0.12, point_size=1.5,
+                       render_points_as_spheres=False))]
+
+
+def _bg_metrics(cyl_path: Path, tree_rows=None) -> Figure:
+    """Load cylinder .txt and build a matplotlib metrics Figure.
+
+    Works on the legacy 8-column cylinder file and the newer 9-column file
+    (with branch order).  Diameter classes mirror the Query page's bins.  When
+    per-tree metrics (tree_metrics.csv rows) are supplied, two tree-level panels
+    are appended.
+    """
+    from gui.query_engine import DIAMETER_CLASS_EDGES_M, DIAMETER_CLASS_LABELS
+
+    has_tree = bool(tree_rows)
+    ncol = 4 if has_tree else 3
+    fig = Figure(figsize=(15 if has_tree else 12, 7), tight_layout=True)
+
+    def _placeholder(text: str) -> Figure:
+        ax = fig.add_subplot(111)
+        ax.text(0.5, 0.5, text, ha="center", va="center", transform=ax.transAxes)
+        ax.axis("off")
+        return fig
 
     try:
         data = np.loadtxt(cyl_path)
     except Exception:
         data = None
-
-    if data is None or data.ndim == 1 and data.shape[0] != 8:
-        ax = fig.add_subplot(111)
-        ax.text(
-            0.5, 0.5,
-            "No cylinder data — QSM not run or pipeline stopped early",
-            ha="center", va="center", transform=ax.transAxes,
-        )
-        ax.axis("off")
-        return fig
-
+    if data is None:
+        return _placeholder("No cylinder data - QSM not run or pipeline stopped early")
     if data.ndim == 1:
         data = data.reshape(1, -1)
-    if data.ndim != 2 or data.shape[1] != 8 or data.shape[0] == 0:
-        ax = fig.add_subplot(111)
-        ax.text(
-            0.5, 0.5, "Cylinder file has unexpected format",
-            ha="center", va="center", transform=ax.transAxes,
-        )
-        ax.axis("off")
-        return fig
+    if data.ndim != 2 or data.shape[1] < 8 or data.shape[0] == 0:
+        return _placeholder("No cylinder data - QSM not run or pipeline stopped early")
 
-    radii   = data[:, 3].ravel()
-    lengths = data[:, 7].ravel()
-    axes_z  = data[:, 4:7][:, 2].ravel()
-    zenith  = np.degrees(np.arccos(np.clip(np.abs(axes_z), 0, 1)))
+    radii    = data[:, 3].ravel()
+    lengths  = data[:, 7].ravel()
+    axes_z   = data[:, 4:7][:, 2].ravel()
+    zenith   = np.degrees(np.arccos(np.clip(np.abs(axes_z), 0, 1)))
+    diam_cm  = radii * 200.0                       # diameter in cm
+    diam_m   = radii * 2.0
+    has_order = data.shape[1] >= 9
+    order    = data[:, 8].ravel().astype(int) if has_order else None
 
-    ax1 = fig.add_subplot(2, 2, 1)
-    ax1.hist(radii * 100, bins=30, color="#4caf50", edgecolor="white")
-    ax1.set_title("Cylinder Radius Distribution")
-    ax1.set_xlabel("Radius (cm)")
+    # Robust volume: per-cylinder volume, flag needle-like fitting artifacts
+    # (extreme length:diameter ratio) so a single bad cylinder cannot quietly
+    # dominate the total.
+    vol_per = np.pi * radii**2 * lengths           # m^3
+    with np.errstate(divide="ignore", invalid="ignore"):
+        slender = np.where(diam_m > 0, lengths / diam_m, 0.0)
+    outliers = slender > 100.0
+    total_vol_L       = float(vol_per.sum() * 1000)
+    total_vol_clean_L = float(vol_per[~outliers].sum() * 1000)
+    median_vol_mL     = float(np.median(vol_per) * 1e6)   # m^3 -> cm^3 (mL)
+
+    # Trunk/branch split: prefer branch order, fall back to zenith
+    if has_order:
+        base = int(order.min())
+        trunk_mask = order == base
+        split_label = f"order {base}"
+    else:
+        trunk_mask = zenith < 30
+        split_label = "zenith < 30 deg"
+
+    # ── Diameter distribution ─────────────────────────────────────────────
+    ax1 = fig.add_subplot(2, ncol, 1)
+    ax1.hist(diam_cm, bins=30, color="#4caf50", edgecolor="white")
+    ax1.set_title("Diameter Distribution")
+    ax1.set_xlabel("Diameter (cm)")
     ax1.set_ylabel("Count")
     ax1.grid(True, alpha=0.3)
 
-    ax2 = fig.add_subplot(2, 2, 2)
-    ax2.hist(lengths, bins=30, color="#1976d2", edgecolor="white")
-    ax2.set_title("Cylinder Length Distribution")
-    ax2.set_xlabel("Length (m)")
+    # ── Diameter classes (same bins as the Query page) ────────────────────
+    ax2 = fig.add_subplot(2, ncol, 2)
+    cls = np.clip(np.digitize(diam_m, DIAMETER_CLASS_EDGES_M) - 1,
+                  0, len(DIAMETER_CLASS_LABELS) - 1)
+    counts = [int((cls == k).sum()) for k in range(len(DIAMETER_CLASS_LABELS))]
+    pretty = ["<1", "1-2", "2-5", "5-10", ">10"]
+    ax2.bar(range(len(counts)), counts, color="#388e3c", edgecolor="white")
+    ax2.set_xticks(range(len(counts)))
+    ax2.set_xticklabels(pretty)
+    ax2.set_title("Diameter Classes")
+    ax2.set_xlabel("Diameter (cm)")
     ax2.set_ylabel("Count")
-    ax2.grid(True, alpha=0.3)
+    ax2.grid(True, alpha=0.3, axis="y")
 
-    ax3 = fig.add_subplot(2, 2, 3)
-    ax3.hist(zenith, bins=18, range=(0, 90), color="#f57c00", edgecolor="white")
-    ax3.set_title("Branch Zenith Angle Distribution")
-    ax3.set_xlabel("Zenith angle (°)  [0° = vertical]")
+    # ── Length distribution ───────────────────────────────────────────────
+    ax3 = fig.add_subplot(2, ncol, 3)
+    ax3.hist(lengths, bins=30, color="#1976d2", edgecolor="white")
+    ax3.set_title("Cylinder Length Distribution")
+    ax3.set_xlabel("Length (m)")
     ax3.set_ylabel("Count")
-    ax3.axvline(45, color="red", linestyle="--", linewidth=0.8, label="45°")
-    ax3.legend(fontsize="small")
     ax3.grid(True, alpha=0.3)
 
-    ax4 = fig.add_subplot(2, 2, 4)
-    total_vol_L = float(np.sum(np.pi * radii**2 * lengths) * 1000)
-    trunk_mask  = zenith < 30
-    stats_labels = [
-        "Total cylinders",
-        "Trunk cyls  (zen<30°)",
-        "Branch cyls (zen≥30°)",
-        "Mean radius (cm)",
-        "Mean length (m)",
-        "Total volume (L)",
+    # ── Branch order ──────────────────────────────────────────────────────
+    ax4 = fig.add_subplot(2, ncol, 4)
+    if has_order:
+        omax = int(order.max())
+        ocounts = [int((order == k).sum()) for k in range(omax + 1)]
+        ax4.bar(range(omax + 1), ocounts, color="#7b1fa2", edgecolor="white")
+        ax4.set_xticks(range(omax + 1))
+        ax4.set_title("Branch Order Distribution")
+        ax4.set_xlabel("Branch order")
+        ax4.set_ylabel("Count")
+        ax4.grid(True, alpha=0.3, axis="y")
+    else:
+        ax4.text(0.5, 0.5, "Branch order not available\n(run predates this field)",
+                 ha="center", va="center", transform=ax4.transAxes, fontsize=9)
+        ax4.axis("off")
+
+    # ── Zenith angle ──────────────────────────────────────────────────────
+    ax5 = fig.add_subplot(2, ncol, 5)
+    ax5.hist(zenith, bins=18, range=(0, 90), color="#f57c00", edgecolor="white")
+    ax5.set_title("Branch Zenith Angle Distribution")
+    ax5.set_xlabel("Zenith angle (deg)  [0 = vertical]")
+    ax5.set_ylabel("Count")
+    ax5.axvline(45, color="red", linestyle="--", linewidth=0.8)
+    ax5.grid(True, alpha=0.3)
+
+    # ── Summary table (mixed-unit scalars do not belong on a shared bar axis) ──
+    ax6 = fig.add_subplot(2, ncol, 6)
+    ax6.axis("off")
+    rows = [
+        ("Cylinders", f"{len(radii):,}"),
+        ("Mean diameter", f"{diam_cm.mean():.2f} cm"),
+        ("Median diameter", f"{np.median(diam_cm):.2f} cm"),
+        ("Mean length", f"{lengths.mean():.3f} m"),
+        (f"Trunk cyls ({split_label})", f"{int(trunk_mask.sum()):,}"),
+        ("Total volume", f"{total_vol_L:.1f} L"),
+        ("Median cyl volume", f"{median_vol_mL:.2f} mL"),
+        ("Slender outliers (L/D>100)", f"{int(outliers.sum()):,}"),
     ]
-    stats_values = [
-        len(radii),
-        int(trunk_mask.sum()),
-        int((~trunk_mask).sum()),
-        round(float(radii.mean()) * 100, 3),
-        round(float(lengths.mean()), 3),
-        round(total_vol_L, 2),
-    ]
-    y_pos = np.arange(len(stats_labels))
-    bars = ax4.barh(y_pos, stats_values, color="#7b1fa2", alpha=0.8)
-    ax4.set_yticks(y_pos)
-    ax4.set_yticklabels(stats_labels, fontsize=8)
-    ax4.set_title("Summary")
-    ax4.set_xlabel("Value")
-    ax4.grid(True, alpha=0.3, axis="x")
-    for bar, val in zip(bars, stats_values):
-        ax4.text(
-            bar.get_width() * 1.01, bar.get_y() + bar.get_height() / 2,
-            str(val), va="center", fontsize=7,
-        )
+    if outliers.any():
+        rows.append(("Volume excl. outliers", f"{total_vol_clean_L:.1f} L"))
+    tbl = ax6.table(cellText=rows, colLabels=["Metric", "Value"],
+                    loc="center", cellLoc="left")
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(8)
+    tbl.scale(1, 1.4)
+    ax6.set_title("Summary")
+
+    # ── Per-tree panels (only when tree_metrics.csv was supplied) ─────────────
+    if has_tree:
+        def _col(key):
+            out = []
+            for r in tree_rows:
+                v = r.get(key, "")
+                if v not in ("", None):
+                    try:
+                        out.append(float(v))
+                    except (TypeError, ValueError):
+                        pass
+            return np.array(out)
+
+        dbh = _col("dbh_cm")
+        basal = _col("basal_diam_cm")
+        height = _col("height_m")
+        tvol = _col("total_volume_L")
+
+        ax7 = fig.add_subplot(2, ncol, 7)
+        if len(dbh):
+            ax7.hist(dbh, bins=min(20, max(5, len(dbh))), color="#00796b", edgecolor="white")
+            ax7.set_title("DBH Across Trees")
+            ax7.set_xlabel("DBH (cm)")
+            ax7.set_ylabel("Trees")
+            ax7.grid(True, alpha=0.3)
+        else:
+            ax7.text(0.5, 0.5, "No DBH\n(all trees < 1.3 m tall)",
+                     ha="center", va="center", transform=ax7.transAxes, fontsize=9)
+            ax7.axis("off")
+
+        ax8 = fig.add_subplot(2, ncol, 8)
+        ax8.axis("off")
+
+        def _med(a):
+            return f"{np.median(a):.2f}" if len(a) else "n/a"
+
+        trows = [
+            ("Trees", f"{len(tree_rows):,}"),
+            ("Median DBH", f"{_med(dbh)} cm" if len(dbh) else "n/a"),
+            ("Median basal dia", f"{_med(basal)} cm" if len(basal) else "n/a"),
+            ("Median height", f"{_med(height)} m" if len(height) else "n/a"),
+            ("Total volume", f"{tvol.sum():.1f} L" if len(tvol) else "n/a"),
+            ("Median tree volume", f"{_med(tvol)} L" if len(tvol) else "n/a"),
+        ]
+        t2 = ax8.table(cellText=trows, colLabels=["Per-tree", "Value"],
+                       loc="center", cellLoc="left")
+        t2.auto_set_font_size(False)
+        t2.set_fontsize(8)
+        t2.scale(1, 1.4)
+        ax8.set_title("Per-tree Summary")
 
     return fig
 
@@ -351,14 +528,11 @@ class EmbeddedPlotWidget(QWidget):
     """
     Swappable single-view area for results visualisation.
 
-    show_pyvista(populate_fn)        – clear the plotter, call populate_fn(plotter),
-                                       then reset_camera.  (All on the main thread.)
-    show_pyvista_meshes(mesh_list)   – apply pre-built meshes to the plotter on
+    show_pyvista_meshes(mesh_list)   - apply pre-built meshes to the plotter on
                                        the main thread; mesh_list was built on a
                                        bg thread via one of the build_* functions.
-    show_matplotlib_figure(fig)      – embed a matplotlib Figure inline.
-    clear()                          – return to placeholder state.
-    get_plotter()                    – return the underlying QtInteractor or None.
+    show_matplotlib_figure(fig)      - embed a matplotlib Figure inline.
+    clear()                          - return to placeholder state.
     """
 
     def __init__(self, parent=None) -> None:
@@ -381,8 +555,8 @@ class EmbeddedPlotWidget(QWidget):
             return
         self._plotter = QtInteractor(self)
         self._plotter.enable_terrain_style()
-        # Keep render rates low — high rates hammer the GPU driver on Windows
-        # and can cause TDR (Timeout Detection and Recovery) → BSOD for large
+        # Keep render rates low - high rates hammer the GPU driver on Windows
+        # and can cause TDR (Timeout Detection and Recovery) -> BSOD for large
         # point clouds.  5 fps during interaction is smooth enough to navigate
         # and gentle enough not to trigger a driver timeout.
         try:
@@ -410,41 +584,6 @@ class EmbeddedPlotWidget(QWidget):
         except Exception:
             pass
         self._layout.addWidget(self._plotter)
-
-    def show_pyvista(self, populate_fn) -> None:
-        """
-        Clear the 3-D scene and call ``populate_fn(plotter)`` to add actors.
-
-        Falls back to a matplotlib placeholder if pyvistaqt is not installed.
-        The entire call happens on the calling (main) thread.
-        """
-        if not _PYVISTAQT_AVAILABLE:
-            self.show_matplotlib_figure(
-                self._make_fallback_figure(
-                    "pyvistaqt is required for 3-D rendering.\n\n"
-                    "pip install pyvistaqt"
-                )
-            )
-            return
-
-        self._placeholder.hide()
-        if self._canvas is not None:
-            self._canvas.hide()
-
-        self._ensure_plotter()
-        self._plotter.clear()
-        self._plotter.show()
-
-        try:
-            populate_fn(self._plotter)
-        except Exception as exc:
-            self._plotter.clear()
-            self.show_matplotlib_figure(
-                self._make_fallback_figure(f"Render error:\n{exc}")
-            )
-            return
-
-        self._plotter.reset_camera()
 
     def show_pyvista_meshes(self, mesh_list: list, post_fn=None) -> None:
         """
@@ -489,6 +628,10 @@ class EmbeddedPlotWidget(QWidget):
             )
             return
 
+        try:
+            self._plotter.camera.up = (0, 0, 1)
+        except Exception:
+            pass
         self._plotter.reset_camera()
 
     def show_matplotlib_figure(self, fig: Figure) -> None:
@@ -515,9 +658,17 @@ class EmbeddedPlotWidget(QWidget):
             self._canvas = None
         self._placeholder.show()
 
-    def get_plotter(self) -> "QtInteractor | None":
-        """Return the underlying QtInteractor, or None if not yet initialised."""
-        return self._plotter
+    def reset_view(self) -> None:
+        """Reset camera to Z-up isometric view (corrects flipped/tilted state)."""
+        if self._plotter is None:
+            return
+        try:
+            self._plotter.camera.up = (0, 0, 1)
+            self._plotter.view_isometric()
+            self._plotter.reset_camera()
+            self._plotter.render()
+        except Exception:
+            pass
 
     # ── Private helpers ───────────────────────────────────────────────────
 
@@ -570,6 +721,8 @@ class ResultsPage(QWidget):
         self._results_folder: str = results_folder
         self._run_dir:  Path | None = None
         self._cloud                 = None
+        self._cloud_mean            = None   # world->normalised offset for cylinders
+        self._qsm_result            = None   # cached cylinders/skeleton render result
         self._labels                = None
         self._cover_sets            = None
         self._point_fields: dict    = {}
@@ -605,7 +758,7 @@ class ResultsPage(QWidget):
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 4, 0)
 
-        self._back_btn = QPushButton("← Back")
+        self._back_btn = QPushButton("Back")
         self._back_btn.setToolTip("Return to the pipeline")
         self._back_btn.clicked.connect(self.back_requested)
         lv.addWidget(self._back_btn)
@@ -621,7 +774,7 @@ class ResultsPage(QWidget):
         self._open_btn.setToolTip("Browse to any run folder")
         self._open_btn.clicked.connect(self._browse_run)
         hdr.addWidget(self._open_btn)
-        self._query_btn = QPushButton("Query →")
+        self._query_btn = QPushButton("Query")
         self._query_btn.setToolTip("Find nearest tree by world coordinate")
         self._query_btn.clicked.connect(self.query_requested)
         hdr.addWidget(self._query_btn)
@@ -649,8 +802,11 @@ class ResultsPage(QWidget):
         self._btn_cloud   = QPushButton("Point Cloud")
         self._btn_segs    = QPushButton("Segments")
         self._btn_cyls    = QPushButton("Cylinders")
+        self._btn_skel    = QPushButton("Skeleton")
         self._btn_metrics = QPushButton("Tree Metrics")
-        for btn in (self._btn_cloud, self._btn_segs, self._btn_cyls, self._btn_metrics):
+        self._btn_cyls.setToolTip("Full QSM cylinders over the point cloud")
+        self._btn_skel.setToolTip("QSM skeleton (branch centrelines) over the point cloud")
+        for btn in (self._btn_cloud, self._btn_segs, self._btn_cyls, self._btn_skel, self._btn_metrics):
             btn.setEnabled(False)
             btn_row.addWidget(btn)
         rv.addLayout(btn_row)
@@ -677,6 +833,12 @@ class ResultsPage(QWidget):
         vb_layout.addWidget(self._view_label)
         vb_layout.addWidget(self._view_combo)
 
+        self._show_cloud_cb = QCheckBox("Show point cloud")
+        self._show_cloud_cb.setChecked(True)
+        self._show_cloud_cb.setToolTip("Show the point cloud behind the cylinders / skeleton")
+        self._show_cloud_cb.toggled.connect(self._on_show_cloud_toggled)
+        vb_layout.addWidget(self._show_cloud_cb)
+
         vb_layout.addStretch()
         self._view_bar.setVisible(False)
         rv.addWidget(self._view_bar)
@@ -702,6 +864,7 @@ class ResultsPage(QWidget):
         self._btn_cloud.clicked.connect(self._show_cloud)
         self._btn_segs.clicked.connect(self._show_segments)
         self._btn_cyls.clicked.connect(self._show_cylinders)
+        self._btn_skel.clicked.connect(self._show_skeleton)
         self._btn_metrics.clicked.connect(self._show_metrics)
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -807,7 +970,7 @@ class ResultsPage(QWidget):
         self._run_dir = run_dir
 
         # Immediately update UI to "loading" state
-        for btn in (self._btn_cloud, self._btn_segs, self._btn_cyls, self._btn_metrics):
+        for btn in (self._btn_cloud, self._btn_segs, self._btn_cyls, self._btn_skel, self._btn_metrics):
             btn.setEnabled(False)
         self._active_view = ""
         self._plot.clear()
@@ -837,11 +1000,17 @@ class ResultsPage(QWidget):
         self._cyl_path     = data["cyl_path"]
         meta               = data["meta"]
 
+        # World->normalised offset so world-coord cylinders align with the
+        # normalised point-cloud snapshot when overlaid.
+        cm = getattr(meta, "cloud_mean", None) if meta else None
+        self._cloud_mean = np.asarray(cm, dtype=float) if cm is not None else np.zeros(3)
+
         self._btn_cloud.setEnabled(self._cloud is not None)
         self._btn_segs.setEnabled(
             self._cloud is not None and self._labels is not None
         )
         self._btn_cyls.setEnabled(self._cyl_path is not None)
+        self._btn_skel.setEnabled(self._cyl_path is not None)
         self._btn_metrics.setEnabled(self._cyl_path is not None)
 
         if meta:
@@ -867,13 +1036,20 @@ class ResultsPage(QWidget):
     def _show_toolbar_for(self, mode: str) -> None:
         show_field = mode == "cloud"
         show_view  = mode == "segments"
+        show_qsm   = mode in ("cylinders", "skeleton")
 
         self._field_label.setVisible(show_field)
         self._field_combo.setVisible(show_field)
         self._view_label.setVisible(show_view)
         self._view_combo.setVisible(show_view)
-        self._view_bar.setVisible(show_field or show_view)
-        self._volume_label.setVisible(mode == "cylinders")
+        self._show_cloud_cb.setVisible(show_qsm)
+        self._view_bar.setVisible(show_field or show_view or show_qsm)
+        self._volume_label.setVisible(show_qsm)
+
+    def _on_show_cloud_toggled(self, checked: bool) -> None:
+        """Re-render the current cylinders/skeleton view with or without the cloud."""
+        if self._active_view in ("cylinders", "skeleton") and self._qsm_result is not None:
+            self._apply_cylinder_render(self._render_seq, self._qsm_result)
 
     # ── View slots ────────────────────────────────────────────────────────────
 
@@ -986,17 +1162,46 @@ class ResultsPage(QWidget):
 
         self._active_view = "cylinders"
         self._show_toolbar_for("cylinders")
-        self._volume_label.setText("← Click on a cylinder to calculate volume within 0.5 m")
+        self._volume_label.setText("Click on a cylinder to calculate volume within 0.5 m")
 
         self._render_seq += 1
         seq = self._render_seq
         cyl_path = self._cyl_path
 
-        task = BgTask(_bg_cylinders, cyl_path)
+        task = BgTask(_bg_cylinders, cyl_path, self._cloud_mean)
         task.result.connect(lambda r: self._apply_cylinder_render(seq, r))
         task.error.connect(
             lambda tb: self._plot.show_matplotlib_figure(
                 EmbeddedPlotWidget._make_fallback_figure(f"Cylinder render error:\n{tb[:200]}")
+            ) if seq == self._render_seq else None
+        )
+        task.start()
+        self._render_task = task
+
+    def _show_skeleton(self) -> None:
+        if self._cyl_path is None:
+            self._plot.show_matplotlib_figure(
+                EmbeddedPlotWidget._make_fallback_figure(
+                    "No cylinder data.\n"
+                    "Enable 'Run QSM + RGI' and re-run the pipeline."
+                )
+            )
+            return
+        from gui.worker import BgTask
+
+        self._active_view = "skeleton"
+        self._show_toolbar_for("skeleton")
+        self._volume_label.setText("Click on a branch to calculate volume within 0.5 m")
+
+        self._render_seq += 1
+        seq = self._render_seq
+        cyl_path = self._cyl_path
+
+        task = BgTask(_bg_skeleton, cyl_path, self._cloud_mean)
+        task.result.connect(lambda r: self._apply_cylinder_render(seq, r))
+        task.error.connect(
+            lambda tb: self._plot.show_matplotlib_figure(
+                EmbeddedPlotWidget._make_fallback_figure(f"Skeleton render error:\n{tb[:200]}")
             ) if seq == self._render_seq else None
         )
         task.start()
@@ -1014,6 +1219,7 @@ class ResultsPage(QWidget):
             )
             return
 
+        self._qsm_result = result   # cache so the cloud toggle can re-render
         mesh_list = result["mesh_list"]
         starts    = result["starts"]
         ends      = result["ends"]
@@ -1039,7 +1245,9 @@ class ResultsPage(QWidget):
         def post_fn(plotter):
             plotter.track_click_position(callback=_on_click, side="left")
 
-        self._plot.show_pyvista_meshes(mesh_list, post_fn=post_fn)
+        # Render the QSM (full cylinders or skeleton), over the cloud if enabled.
+        cloud_layer = _dim_cloud_layer(self._cloud) if self._show_cloud_cb.isChecked() else []
+        self._plot.show_pyvista_meshes(cloud_layer + mesh_list, post_fn=post_fn)
 
     def _show_metrics(self) -> None:
         if self._cyl_path is None:
@@ -1047,7 +1255,7 @@ class ResultsPage(QWidget):
             ax = fig.add_subplot(111)
             ax.text(
                 0.5, 0.5,
-                "No cylinder data — QSM not run or pipeline stopped early",
+                "No cylinder data - QSM not run or pipeline stopped early",
                 ha="center", va="center", transform=ax.transAxes,
             )
             ax.axis("off")
@@ -1062,7 +1270,10 @@ class ResultsPage(QWidget):
         seq = self._render_seq
         cyl_path = self._cyl_path
 
-        task = BgTask(_bg_metrics, cyl_path)
+        from gui.results_io import load_tree_metrics
+        tree_rows = load_tree_metrics(self._run_dir) if self._run_dir else []
+
+        task = BgTask(_bg_metrics, cyl_path, tree_rows)
         task.result.connect(
             lambda fig: self._plot.show_matplotlib_figure(fig)
             if seq == self._render_seq else None

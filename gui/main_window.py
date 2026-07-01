@@ -1,5 +1,5 @@
 """
-EcomodelMainWindow – PySide6 main window for the Ecomodel pipeline.
+EcomodelMainWindow - PySide6 main window for the Ecomodel pipeline.
 
 Layout
 ──────
@@ -35,6 +35,7 @@ from PySide6.QtCore import QThread, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -71,12 +72,13 @@ class EcomodelMainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: EcomodelWorker | None = None
         self._defaults = EcomodelConfig()
+        self._last_run_dir: "Path | None" = None   # set after each run for report button
 
         # ── Stacked widget: page 0 = pipeline, page 1 = results, page 2 = query
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
 
-        # Page 0 — pipeline
+        # Page 0 - pipeline
         pipeline_page = QWidget()
         pipeline_root = QHBoxLayout(pipeline_page)
         splitter = QSplitter(Qt.Horizontal)
@@ -100,7 +102,7 @@ class EcomodelMainWindow(QMainWindow):
         # Initialise status bar before connecting signals that write to it.
         self.setStatusBar(QStatusBar())
 
-        # Page 1 — results viewer
+        # Page 1 - results viewer
         self._results_page = ResultsPage(
             results_folder=self._defaults.results_folder,
         )
@@ -113,7 +115,7 @@ class EcomodelMainWindow(QMainWindow):
         self._results_page.query_requested.connect(self._show_query_page)
         self._stack.addWidget(self._results_page)     # index 1
 
-        # Page 2 — query mode
+        # Page 2 - query mode
         self._query_page = QueryPage(results_folder=self._defaults.results_folder)
         self._query_page.back_requested.connect(lambda: self._stack.setCurrentIndex(1))
         self._query_page.status_message.connect(
@@ -126,6 +128,20 @@ class EcomodelMainWindow(QMainWindow):
     def _build_param_panel(self, parent: QWidget) -> None:
         layout = QVBoxLayout(parent)
         layout.setAlignment(Qt.AlignTop)
+
+        # ── Pipeline mode selector ────────────────────────────────────────────
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Pipeline Mode:"))
+        self._pipeline_mode = QComboBox()
+        self._pipeline_mode.addItems(["Full (ecomodel)", "Lite (ecomodel_lite)"])
+        self._pipeline_mode.setToolTip(
+            "Full: 14-step GPU-accelerated pipeline for large scans.\n"
+            "Lite: 5-step CPU pipeline - ground removal, leaf removal, "
+            "instance segmentation, TreeQSM."
+        )
+        self._pipeline_mode.currentIndexChanged.connect(self._on_pipeline_mode_changed)
+        mode_row.addWidget(self._pipeline_mode, stretch=1)
+        layout.addLayout(mode_row)
 
         # ── I/O ──────────────────────────────────────────────────────────────
         io = QGroupBox("Input / Output")
@@ -154,7 +170,185 @@ class EcomodelMainWindow(QMainWindow):
         self._cylinder_filename = QLineEdit(self._defaults.cylinder_filename)
         g.addWidget(self._cylinder_filename, 2, 1, 1, 2)
 
+        g.addWidget(QLabel("Scalar Field:"), 3, 0)
+        self._scalar_field = QComboBox()
+        self._scalar_field.setEditable(True)
+        self._scalar_field.addItem(self._defaults.scalar_field)
+        self._scalar_field.setToolTip(
+            "LAS per-point field used as the intensity channel.\n"
+            "Defaults to 'intensity'. For RIEGL-style scans whose intensity is "
+            "empty, pick 'Reflectance'. The list is populated from the input file."
+        )
+        self._scalar_field.currentTextChanged.connect(self._on_scalar_field_changed)
+        g.addWidget(self._scalar_field, 3, 1, 1, 2)
+
+        self._normalize_scalar = QCheckBox("Normalize scalar field to 0-65535")
+        self._normalize_scalar.setChecked(self._defaults.normalize_scalar)
+        self._normalize_scalar.setToolTip(
+            "Rescale the chosen field to the 0-65535 range so fields with "
+            "negative or fractional units (e.g. reflectance in dB) work with "
+            "the positive intensity thresholds. Auto-enabled for non-intensity "
+            "fields; rescaling is per-file."
+        )
+        g.addWidget(self._normalize_scalar, 4, 0, 1, 3)
+
         layout.addWidget(io)
+
+        # ── Lite: General (shown only in Lite mode) ──────────────────────────
+        lg = QGroupBox("Lite Settings")
+        ll = QGridLayout(lg)
+
+        ll.addWidget(QLabel("Intensity Threshold:"), 0, 0)
+        self._lite_intensity = self._spin(0, 200000, self._defaults.lite_intensity_threshold)
+        self._lite_intensity.setToolTip("Remove points below this intensity before leaf removal.")
+        ll.addWidget(self._lite_intensity, 0, 1)
+
+        ll.addWidget(QLabel("Segmenter:"), 1, 0)
+        self._lite_segmenter = QComboBox()
+        self._lite_segmenter.addItems(["Scanline (default)", "TreeLearn (neural net)"])
+        self._lite_segmenter.setToolTip(
+            "Scanline: fast geometric segmenter.\n"
+            "TreeLearn: deep-learning segmenter - handles overlapping canopy better "
+            "but requires a GPU and pre-downloaded model weights."
+        )
+        ll.addWidget(self._lite_segmenter, 1, 1)
+
+        # ── TreeLearn sub-controls (hidden when Scanline selected) ────────────
+        self._treelearn_widget = QWidget()
+        tlw = QGridLayout(self._treelearn_widget)
+        tlw.setContentsMargins(0, 0, 0, 0)
+
+        tlw.addWidget(QLabel("Config YAML:"), 0, 0)
+        self._treelearn_config = QLineEdit(self._defaults.treelearn_config_path)
+        self._treelearn_config.setPlaceholderText("Path to TreeLearn pipeline YAML...")
+        self._treelearn_config.setToolTip(
+            "YAML config file for TreeLearn (the 'pretrain' key inside must point "
+            "to a downloaded .pth weights file)."
+        )
+        tlw.addWidget(self._treelearn_config, 0, 1)
+        _tl_browse = QPushButton("Browse…")
+        _tl_browse.clicked.connect(self._browse_treelearn_config)
+        tlw.addWidget(_tl_browse, 0, 2)
+
+        self._treelearn_gpu = QCheckBox("Use GPU (CUDA)")
+        self._treelearn_gpu.setChecked(self._defaults.treelearn_use_gpu)
+        self._treelearn_gpu.setToolTip(
+            "Run TreeLearn on the GPU (recommended).\n"
+            "Uncheck to use CPU - very slow, for testing only."
+        )
+        tlw.addWidget(self._treelearn_gpu, 1, 0, 1, 3)
+
+        self._treelearn_widget.setVisible(False)
+        ll.addWidget(self._treelearn_widget, 2, 0, 1, 2)
+
+        self._lite_segmenter.currentIndexChanged.connect(self._on_segmenter_changed)
+
+        ll.addWidget(QLabel("QSM Method:"), 3, 0)
+        self._lite_qsm_method = QComboBox()
+        self._lite_qsm_method.addItems(["TreeQSM", "SmartQSM"])
+        self._lite_qsm_method.setToolTip("SmartQSM is an external tool installed separately.")
+        ll.addWidget(self._lite_qsm_method, 3, 1)
+
+        self._smartqsm_widget = QWidget()
+        sqw = QGridLayout(self._smartqsm_widget)
+        sqw.setContentsMargins(0, 0, 0, 0)
+        self._smartqsm_dir = QLineEdit(self._defaults.smartqsm_dir)
+        self._smartqsm_dir.setPlaceholderText("SmartQSM checkout folder...")
+        _sq_db = QPushButton("Browse…")
+        _sq_db.clicked.connect(self._browse_smartqsm_dir)
+        sqw.addWidget(QLabel("SmartQSM dir:"), 0, 0)
+        sqw.addWidget(self._smartqsm_dir, 0, 1)
+        sqw.addWidget(_sq_db, 0, 2)
+        self._smartqsm_python = QLineEdit(self._defaults.smartqsm_python)
+        self._smartqsm_python.setPlaceholderText("SmartQSM venv python.exe...")
+        _sq_pb = QPushButton("Browse…")
+        _sq_pb.clicked.connect(self._browse_smartqsm_python)
+        sqw.addWidget(QLabel("SmartQSM python:"), 1, 0)
+        sqw.addWidget(self._smartqsm_python, 1, 1)
+        sqw.addWidget(_sq_pb, 1, 2)
+        self._smartqsm_config = QLineEdit(self._defaults.smartqsm_config)
+        self._smartqsm_config.setPlaceholderText("SmartQSM config YAML...")
+        _sq_cb = QPushButton("Browse…")
+        _sq_cb.clicked.connect(self._browse_smartqsm_config)
+        sqw.addWidget(QLabel("SmartQSM config:"), 2, 0)
+        sqw.addWidget(self._smartqsm_config, 2, 1)
+        sqw.addWidget(_sq_cb, 2, 2)
+        self._smartqsm_widget.setVisible(False)
+        ll.addWidget(self._smartqsm_widget, 4, 0, 1, 2)
+        self._lite_qsm_method.currentIndexChanged.connect(self._on_lite_qsm_method_changed)
+
+        lg.setVisible(False)
+        layout.addWidget(lg)
+
+        # ── Lite: Ground Removal (CSF) ────────────────────────────────────────
+        lcg = QGroupBox("Ground Removal (CSF)")
+        lcg.setCheckable(True)
+        lcg.setChecked(False)
+        lcg.setToolTip("Check the title to enable editing of this section")
+        lcl = QGridLayout(lcg)
+        lcl.addWidget(QLabel("Cloth Resolution:"), 0, 0)
+        self._lite_csf_cloth = self._dspin(0.1, 20.0, self._defaults.lite_csf_cloth_resolution, 2)
+        self._lite_csf_cloth.setToolTip("Larger = coarser ground surface. Typical: 0.5-5.")
+        lcl.addWidget(self._lite_csf_cloth, 0, 1)
+        lcl.addWidget(QLabel("Class Threshold:"), 1, 0)
+        self._lite_csf_thresh = self._dspin(0.01, 5.0, self._defaults.lite_csf_class_threshold, 3)
+        self._lite_csf_thresh.setToolTip("Points within this distance of cloth = ground.")
+        lcl.addWidget(self._lite_csf_thresh, 1, 1)
+        lcl.addWidget(QLabel("Iterations:"), 2, 0)
+        self._lite_csf_iters = self._spin(50, 5000, self._defaults.lite_csf_iterations)
+        lcl.addWidget(self._lite_csf_iters, 2, 1)
+        self._lite_csf_underground = QCheckBox("Remove Underground Points")
+        self._lite_csf_underground.setChecked(self._defaults.lite_csf_remove_underground)
+        lcl.addWidget(self._lite_csf_underground, 3, 0, 1, 2)
+        lcg.setVisible(False)
+        layout.addWidget(lcg)
+
+        # ── Lite: Noise Removal ───────────────────────────────────────────────
+        lng = QGroupBox("Noise Removal")
+        lng.setCheckable(True)
+        lng.setChecked(False)
+        lng.setToolTip("Check the title to enable editing of this section")
+        lnl = QGridLayout(lng)
+        lnl.addWidget(QLabel("Voxel Size (m):"), 0, 0)
+        self._lite_noise_voxel = self._dspin(0.01, 5.0, self._defaults.lite_noise_voxel_size, 3)
+        self._lite_noise_voxel.setToolTip("Voxel grid size for cluster separation.")
+        lnl.addWidget(self._lite_noise_voxel, 0, 1)
+        lnl.addWidget(QLabel("Min Points:"), 1, 0)
+        self._lite_noise_minpts = self._spin(1, 10000, self._defaults.lite_noise_min_points)
+        self._lite_noise_minpts.setToolTip("Clusters smaller than this are removed as noise.")
+        lnl.addWidget(self._lite_noise_minpts, 1, 1)
+        lng.setVisible(False)
+        layout.addWidget(lng)
+
+        # ── Lite: QSM Cover Sets ──────────────────────────────────────────────
+        lqg = QGroupBox("QSM Cover Sets")
+        lqg.setCheckable(True)
+        lqg.setChecked(False)
+        lqg.setToolTip("Check the title to enable editing of this section")
+        lql = QGridLayout(lqg)
+        lite_cs_fields = [
+            ("Patch Diam 1:",     "_lite_patch_diam1",     0.001, 2.0, self._defaults.lite_patch_diam1,     4),
+            ("Ball Rad 1:",       "_lite_ball_rad1",       0.001, 2.0, self._defaults.lite_ball_rad1,       4),
+            ("Patch Diam 2 Min:", "_lite_patch_diam2_min", 0.001, 2.0, self._defaults.lite_patch_diam2_min, 4),
+            ("Patch Diam 2 Max:", "_lite_patch_diam2_max", 0.001, 2.0, self._defaults.lite_patch_diam2_max, 4),
+            ("Ball Rad 2:",       "_lite_ball_rad2",       0.001, 2.0, self._defaults.lite_ball_rad2,       4),
+        ]
+        for r, (lbl, attr, lo, hi, val, dec) in enumerate(lite_cs_fields):
+            lql.addWidget(QLabel(lbl), r, 0)
+            w = self._dspin(lo, hi, val, dec)
+            setattr(self, attr, w)
+            lql.addWidget(w, r, 1)
+        n = len(lite_cs_fields)
+        lql.addWidget(QLabel("Nmin 1:"), n, 0)
+        self._lite_nmin1 = self._spin(1, 500, self._defaults.lite_nmin1)
+        self._lite_nmin1.setToolTip("Minimum points per cover-set ball (lower = more sets on sparse data).")
+        lql.addWidget(self._lite_nmin1, n, 1)
+        lqg.setVisible(False)
+        layout.addWidget(lqg)
+
+        # Collect all lite-only groups for show/hide toggling
+        self._lite_groups = [lg, lcg, lng, lqg]
+        self._lite_cover_group = lqg   # TreeQSM-only; hidden when SmartQSM selected
 
         # ── Tile subdivision ──────────────────────────────────────────────────
         tg = QGroupBox("Tile Subdivision")
@@ -311,10 +505,11 @@ class EcomodelMainWindow(QMainWindow):
         layout.addWidget(qg)
 
         # ── Cover sets ───────────────────────────────────────────────────────────
-        csg = QGroupBox("Cover Sets")
+        csg = QGroupBox("Cover Sets (not active in Full pipeline)")
         csg.setCheckable(True)
         csg.setChecked(False)
-        csg.setToolTip("Check the title to enable editing of this section")
+        csg.setEnabled(False)
+        csg.setToolTip("These cover-set parameters are not yet wired into the full pipeline.")
         csl = QGridLayout(csg)
 
         cs_fields = [
@@ -343,6 +538,7 @@ class EcomodelMainWindow(QMainWindow):
 
         # ── RGI leaf/wood separation ──────────────────────────────────────────
         rg = QGroupBox("RGI Leaf/Wood Separation")
+        self._rgi_group = rg   # keep reference for show/hide in lite mode
         rg.setCheckable(True)
         rg.setChecked(False)
         rg.setToolTip("Check the title to enable editing of this section")
@@ -432,6 +628,13 @@ class EcomodelMainWindow(QMainWindow):
 
         layout.addWidget(pkg)
 
+        # Keep references so _on_pipeline_mode_changed can show/hide them.
+        # rg (RGI) is intentionally excluded - it stays visible in both modes.
+        self._full_pipeline_groups = [tg, cg, tmg, og, sg, qg, csg, pkg]
+
+        # Apply initial visibility/gating for the default (Full) mode.
+        self._on_pipeline_mode_changed(self._pipeline_mode.currentIndex())
+
     # ── Right panel ───────────────────────────────────────────────────────────
 
     def _build_right_panel(self, parent: QWidget) -> None:
@@ -448,15 +651,24 @@ class EcomodelMainWindow(QMainWindow):
         self._stop_btn.clicked.connect(self._stop_pipeline)
         btn_row.addWidget(self._stop_btn)
 
-        self._results_btn = QPushButton("Results →")
+        self._results_btn = QPushButton("Results")
         self._results_btn.setToolTip("View results")
         self._results_btn.clicked.connect(self._show_results_page)
         btn_row.addWidget(self._results_btn)
 
-        self._query_nav_btn = QPushButton("Query →")
+        self._query_nav_btn = QPushButton("Query")
         self._query_nav_btn.setToolTip("Find nearest tree by world coordinate")
         self._query_nav_btn.clicked.connect(self._show_query_page)
         btn_row.addWidget(self._query_nav_btn)
+
+        self._debug_mode = QCheckBox("Debug Mode")
+        self._debug_mode.setToolTip(
+            "Save intermediate point clouds at each pipeline step.\n"
+            "Automatically generates a PDF report on completion.\n"
+            "Full pipeline: also enables Save Clusters and Save Leaf Removal Output."
+        )
+        btn_row.addWidget(self._debug_mode)
+
         layout.addLayout(btn_row)
 
         self._progress_bar = QProgressBar()
@@ -486,6 +698,8 @@ class EcomodelMainWindow(QMainWindow):
             input_folder=self._input_folder.text().strip(),
             results_folder=self._results_folder.text().strip(),
             cylinder_filename=self._cylinder_filename.text().strip(),
+            scalar_field=self._scalar_field.currentText().strip() or "intensity",
+            normalize_scalar=self._normalize_scalar.isChecked(),
             cube_size=self._cube_size.value(),
             meter_conversion=self._meter_conversion.value(),
             csf_band_size=self._csf_band_size.value(),
@@ -499,9 +713,10 @@ class EcomodelMainWindow(QMainWindow):
             denoise_resolution=self._denoise_resolution.value(),
             remove_duplicates=self._remove_duplicates.isChecked(),
             segment_intensity_threshold=self._seg_intensity.value(),
-            save_clusters=self._save_clusters.isChecked(),
+            debug_mode=self._debug_mode.isChecked(),
+            save_clusters=self._save_clusters.isChecked() or self._debug_mode.isChecked(),
             qsm_intensity_threshold=self._qsm_intensity.value(),
-            save_leaf_removal_output=self._save_leaf_output.isChecked(),
+            save_leaf_removal_output=self._save_leaf_output.isChecked() or self._debug_mode.isChecked(),
             run_qsm=self._run_qsm.isChecked(),
             run_leaf_removal=self._run_leaf_removal.isChecked(),
             create_cylinder_plot=self._create_cylinder_plot.isChecked(),
@@ -526,6 +741,27 @@ class EcomodelMainWindow(QMainWindow):
             use_checkpoint=self._use_checkpoint.isChecked(),
             save_checkpoint=self._save_checkpoint.isChecked(),
             checkpoint_resume_file=self._checkpoint_resume_file.text().strip(),
+            pipeline_type="lite" if self._pipeline_mode.currentIndex() == 1 else "full",
+            lite_intensity_threshold=self._lite_intensity.value(),
+            lite_csf_cloth_resolution=self._lite_csf_cloth.value(),
+            lite_csf_class_threshold=self._lite_csf_thresh.value(),
+            lite_csf_iterations=self._lite_csf_iters.value(),
+            lite_csf_remove_underground=self._lite_csf_underground.isChecked(),
+            lite_noise_voxel_size=self._lite_noise_voxel.value(),
+            lite_noise_min_points=self._lite_noise_minpts.value(),
+            lite_patch_diam1=self._lite_patch_diam1.value(),
+            lite_ball_rad1=self._lite_ball_rad1.value(),
+            lite_nmin1=self._lite_nmin1.value(),
+            lite_patch_diam2_min=self._lite_patch_diam2_min.value(),
+            lite_patch_diam2_max=self._lite_patch_diam2_max.value(),
+            lite_ball_rad2=self._lite_ball_rad2.value(),
+            lite_segmenter_type="treelearn" if self._lite_segmenter.currentIndex() == 1 else "scanline",
+            treelearn_config_path=self._treelearn_config.text().strip(),
+            treelearn_use_gpu=self._treelearn_gpu.isChecked(),
+            lite_qsm_method="smartqsm" if self._lite_qsm_method.currentIndex() == 1 else "treeqsm",
+            smartqsm_dir=self._smartqsm_dir.text().strip(),
+            smartqsm_python=self._smartqsm_python.text().strip(),
+            smartqsm_config=self._smartqsm_config.text().strip(),
         )
 
     # ── Pipeline control ──────────────────────────────────────────────────────
@@ -534,7 +770,7 @@ class EcomodelMainWindow(QMainWindow):
         config = self._build_config()
 
         # When resuming from a specific checkpoint file the original LAS/LAZ
-        # folder may no longer exist — the pickled Ecomodel already contains
+        # folder may no longer exist - the pickled Ecomodel already contains
         # all the loaded point data.  Only validate the input folder when a
         # fresh run is needed (not resuming from an explicit checkpoint file).
         _needs_input_folder = not (
@@ -578,14 +814,9 @@ class EcomodelMainWindow(QMainWindow):
         if self._worker:
             self._worker.request_stop()
             self._stop_btn.setEnabled(False)
-            self._append_log("[GUI] Stop requested — pipeline will halt after the current step.\n")
+            self._append_log("[GUI] Stop requested - pipeline will halt after the current step.\n")
 
     # ── Reset handlers ────────────────────────────────────────────────────────
-
-    def _reset_io_defaults(self) -> None:
-        d = self._defaults
-        self._results_folder.setText(d.results_folder)
-        self._cylinder_filename.setText(d.cylinder_filename)
 
     def _reset_subdivision_defaults(self) -> None:
         d = self._defaults
@@ -646,13 +877,111 @@ class EcomodelMainWindow(QMainWindow):
         self._rgi_use_residual.setChecked(d.rgi_use_residual_test)
         self._rgi_use_curvature.setChecked(d.rgi_use_curvature_test)
 
-    def _reset_checkpoint_defaults(self) -> None:
-        d = self._defaults
-        self._checkpoint_name.setText(d.checkpoint_name)
-        self._checkpoint_folder.setText(d.checkpoint_folder)
-        self._use_checkpoint.setChecked(d.use_checkpoint)
-        self._save_checkpoint.setChecked(getattr(d, "save_checkpoint", False))
-        self._checkpoint_resume_file.setText(getattr(d, "checkpoint_resume_file", ""))
+    def _on_segmenter_changed(self, index: int) -> None:
+        """Show TreeLearn controls only when TreeLearn segmenter is selected."""
+        self._treelearn_widget.setVisible(index == 1)
+
+    def _on_lite_qsm_method_changed(self, index: int) -> None:
+        """Show SmartQSM path controls; cover sets are TreeQSM-only."""
+        self._smartqsm_widget.setVisible(index == 1)
+        if self._pipeline_mode.currentIndex() == 1:   # lite mode
+            self._lite_cover_group.setVisible(index == 0)
+
+    def _browse_smartqsm_dir(self) -> None:
+        d = QFileDialog.getExistingDirectory(
+            self, "Select SmartQSM checkout", self._smartqsm_dir.text() or "")
+        if d:
+            self._smartqsm_dir.setText(d)
+
+    def _browse_smartqsm_python(self) -> None:
+        p, _ = QFileDialog.getOpenFileName(
+            self, "Select SmartQSM python", self._smartqsm_python.text() or "",
+            "Python (python*.exe);;All files (*)")
+        if p:
+            self._smartqsm_python.setText(p)
+
+    def _browse_smartqsm_config(self) -> None:
+        p, _ = QFileDialog.getOpenFileName(
+            self, "Select SmartQSM config", self._smartqsm_config.text() or "",
+            "YAML (*.yaml *.yml);;All files (*)")
+        if p:
+            self._smartqsm_config.setText(p)
+
+    def _browse_treelearn_config(self) -> None:
+        """Open file picker for TreeLearn YAML config."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select TreeLearn Config YAML",
+            self._treelearn_config.text() or "",
+            "YAML files (*.yaml *.yml);;All files (*)",
+        )
+        if path:
+            self._treelearn_config.setText(path)
+
+    def _on_pipeline_mode_changed(self, index: int) -> None:
+        """Show/hide parameter groups based on selected pipeline mode.
+
+        Lite mode shows: Lite Settings + RGI (shared leaf/wood params).
+        Full mode shows: all full-pipeline groups + RGI.
+        """
+        is_lite = (index == 1)
+        for grp in self._full_pipeline_groups:
+            grp.setVisible(not is_lite)
+        for grp in self._lite_groups:
+            grp.setVisible(is_lite)
+        if is_lite:
+            self._on_lite_qsm_method_changed(self._lite_qsm_method.currentIndex())
+        # RGI group is always visible, but only the Lite pipeline consumes these
+        # params - gate it in Full mode so the controls don't mislead.
+        self._rgi_group.setVisible(True)
+        if is_lite:
+            self._rgi_group.setEnabled(True)
+            self._rgi_group.setTitle("RGI Leaf/Wood Separation")
+        else:
+            self._rgi_group.setEnabled(False)
+            self._rgi_group.setTitle("RGI Leaf/Wood Separation (not active in Full pipeline)")
+
+    def _trigger_report(self) -> None:
+        """Generate a PDF report for the most recent run (called automatically in debug mode)."""
+        try:
+            from ecomodel_report_maker import generate_report
+        except ImportError:
+            self._append_log(
+                "[Report] Skipped - reportlab not installed "
+                "(pip install reportlab to enable PDF reports).\n"
+            )
+            return
+
+        input_folder = self._input_folder.text().strip()
+        results_folder = self._results_folder.text().strip()
+        if not input_folder or not results_folder:
+            return
+
+        if self._last_run_dir and self._last_run_dir.exists():
+            report_run_dir = str(self._last_run_dir)
+        else:
+            report_run_dir = results_folder
+
+        output_pdf = str(Path(results_folder) / "ecomodel_report.pdf")
+        self._append_log(f"[Report] Generating PDF report: {output_pdf}\n")
+
+        from gui.worker import BgTask
+        task = BgTask(generate_report, input_folder, report_run_dir, output_pdf)
+        task.result.connect(self._on_report_done)
+        task.error.connect(self._on_report_error)
+        task.start()
+        self._report_task = task
+
+    def _on_report_done(self, page_count) -> None:
+        output_pdf = str(Path(self._results_folder.text().strip()) / "ecomodel_report.pdf")
+        self._append_log(f"[Report] Done - {page_count} page(s): {output_pdf}\n")
+        self.statusBar().showMessage(f"Report saved: {output_pdf}")
+        import os, sys
+        if sys.platform == "win32":
+            os.startfile(output_pdf)
+
+    def _on_report_error(self, tb: str) -> None:
+        self._append_log(f"[Report] ERROR:\n{tb}\n")
+        QMessageBox.critical(self, "Report Error", tb[:600])
 
     def _on_checkpoint_section_toggled(self, checked: bool) -> None:
         """Re-apply the resume-file enable state after the section is unlocked."""
@@ -713,13 +1042,25 @@ class EcomodelMainWindow(QMainWindow):
             self._progress_bar.setValue(0)
             self.statusBar().showMessage("Pipeline stopped")
         else:
-            results = Path(eco.results_folder).resolve()
+            # eco is an Ecomodel object (full pipeline) or a dict (lite pipeline)
+            if isinstance(eco, dict):
+                run_dir = Path(eco.get("run_dir", self._results_folder.text().strip()))
+                results = run_dir.parent.resolve()
+                self._last_run_dir = run_dir
+            else:
+                results = Path(eco.results_folder).resolve()
+                self._last_run_dir = None
             self._append_log("[GUI] Pipeline completed successfully.\n")
             self._append_log(f"[GUI] Results written to: {results}\n")
             self._progress_label.setText("Done")
-            self.statusBar().showMessage(f"Done — results in {results}")
+            self.statusBar().showMessage(f"Done - results in {results}")
+            if self._debug_mode.isChecked():
+                self._trigger_report()
             page = self._show_results_page()
-            page.notify_run_complete(results)
+            if self._last_run_dir:
+                page.notify_run_complete(self._last_run_dir.parent)
+            else:
+                page.notify_run_complete(results)
 
     def _on_error(self, tb: str) -> None:
         self._append_log(f"[ERROR]\n{tb}\n")
@@ -757,7 +1098,7 @@ class EcomodelMainWindow(QMainWindow):
             parts.append(f"{cyl_count} cylinders")
         if output_path:
             parts.append(output_path)
-        self._append_log(" — ".join(parts) + "\n")
+        self._append_log(" - ".join(parts) + "\n")
 
     # ── Results page navigation ───────────────────────────────────────────────
 
@@ -813,6 +1154,43 @@ class EcomodelMainWindow(QMainWindow):
 
         self._cylinder_filename.setText(stem)
         self._checkpoint_name.setText(f"{stem}_checkpoint")
+
+        self._populate_scalar_fields(folder, las_files)
+
+    def _populate_scalar_fields(self, folder: str, las_files: list) -> None:
+        """
+        Fill the Scalar Field dropdown from the first LAS/LAZ file's dimensions.
+
+        Preserves the current selection if it is still available; otherwise
+        keeps 'intensity'.  Silent on any read error (dropdown stays editable
+        so the user can still type a field name).
+        """
+        if not las_files:
+            return
+        try:
+            from Utils.Utils import list_las_scalar_fields
+            import os
+            fields = list_las_scalar_fields(os.path.join(folder, las_files[0]))
+        except Exception:
+            fields = []
+        if not fields:
+            return
+
+        current = self._scalar_field.currentText().strip() or "intensity"
+        self._scalar_field.blockSignals(True)
+        self._scalar_field.clear()
+        self._scalar_field.addItems(fields)
+        # Restore prior selection if still present, else prefer 'intensity'.
+        idx = self._scalar_field.findText(current)
+        if idx < 0:
+            idx = self._scalar_field.findText("intensity")
+        self._scalar_field.setCurrentIndex(idx if idx >= 0 else 0)
+        self._scalar_field.blockSignals(False)
+
+    def _on_scalar_field_changed(self, text: str) -> None:
+        """Auto-enable normalization when a non-intensity field is chosen."""
+        if text.strip().lower() != "intensity":
+            self._normalize_scalar.setChecked(True)
 
     def _browse_results(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select Results Folder")

@@ -8,11 +8,10 @@ from gui.config import EcomodelConfig
 
 
 class PipelineStopped(Exception):
-    """Raised when the user clicks Stop — not a real error."""
+    """Raised when the user clicks Stop - not a real error."""
 
 
 from gui.results_io import (
-    find_run_dirs,
     make_run_dir,
     save_cover_sets_snapshot,
     save_point_fields_snapshot,
@@ -38,35 +37,35 @@ def run_ecomodel_pipeline(
 
     PIPELINE ORDER
     ──────────────
-      1. combine_las_files              – load LAS/LAZ tiles into eco._raw_tiles
-      2. subdivide_tiles (first pass)   – create coarse tiles for deduplication
-      3. remove_duplicate_points        – remove duplicate points per tile
-      4. recombine_tiles                – merge coarse tiles back into eco._raw_tiles
-      5. filter_ground                  – CSF ground filtering on raw tiles
-      6. get_terrain_model              – build DEM on raw tiles
-      7. normalize_raw_tiles            – apply terrain subtraction / XY centering
-      8. move raw tiles to device       – convert raw tiles to torch if needed
-      9. subdivide_tiles (second pass)  – create tiles for segmentation / QSM
-     10. denoise (optional)             – remove sparse local noise on subdivided tiles
-     11. segment_trees                  – tree instance segmentation on eco.tiles
-     12. reset_terrain                  – restore coordinates before QSM extraction
-     13. get_qsm_segments_*             – run QSM with or without leaf removal
-     14. recombine_tiles                – merge processed tiles back to eco._raw_tiles
-     15. get_all_cylinders              – export cylinder array
-     16. create_cylinder_plot (optional)– create plot output
+      1. combine_las_files              - load LAS/LAZ tiles into eco._raw_tiles
+      2. subdivide_tiles (first pass)   - create coarse tiles for deduplication
+      3. remove_duplicate_points        - remove duplicate points per tile
+      4. recombine_tiles                - merge coarse tiles back into eco._raw_tiles
+      5. filter_ground                  - CSF ground filtering on raw tiles
+      6. get_terrain_model              - build DEM on raw tiles
+      7. normalize_raw_tiles            - apply terrain subtraction / XY centering
+      8. move raw tiles to device       - convert raw tiles to torch if needed
+      9. subdivide_tiles (second pass)  - create tiles for segmentation / QSM
+     10. denoise (optional)             - remove sparse local noise on subdivided tiles
+     11. segment_trees                  - tree instance segmentation on eco.tiles
+     12. reset_terrain                  - restore coordinates before QSM extraction
+     13. get_qsm_segments_*             - run QSM with or without leaf removal
+     14. recombine_tiles                - merge processed tiles back to eco._raw_tiles
+     15. get_all_cylinders              - export cylinder array
+     16. create_cylinder_plot (optional)- create plot output
 
     Processing Flow
     ───────────────
     The pipeline alternates between operating on:
-        • eco._raw_tiles  (full point cloud)
-        • eco.tiles       (subdivided tiles)
+        - eco._raw_tiles  (full point cloud)
+        - eco.tiles       (subdivided tiles)
 
     Key design constraint:
         Some operations require full tiles (ground filtering, terrain model),
         while others require spatial subdivision (segmentation, QSM).
 
     Therefore:
-        raw_tiles → subdivide → tiles → recombine → raw_tiles → subdivide → tiles
+        raw_tiles -> subdivide -> tiles -> recombine -> raw_tiles -> subdivide -> tiles
     """
 
     from ecomodel import Ecomodel
@@ -128,7 +127,7 @@ def run_ecomodel_pipeline(
                     "las_field_names": list(_las_field_names),
                 }, _f, indent=2)
         except Exception:
-            pass  # non-critical — fallback to filename parsing on load
+            pass  # non-critical - fallback to filename parsing on load
 
     def _should_run(step_num: int) -> bool:
         return step_num > _resume_after_step
@@ -199,7 +198,7 @@ def run_ecomodel_pipeline(
 
     # Enumerate LAS files for tile_update status signals.
     # When resuming from a checkpoint the original input folder may not exist
-    # — the Ecomodel already has all its data.  Gracefully fall back to an
+    # - the Ecomodel already has all its data.  Gracefully fall back to an
     # empty list; tile_update signals are informational only.
     import os as _os
     try:
@@ -213,10 +212,14 @@ def run_ecomodel_pipeline(
     # Step 1: load raw tiles
     step += 1
     if _should_run(step):
-        _log(f"Step {step}/{total_steps} – Loading LAS/LAZ tiles...\n")
+        _log(f"Step {step}/{total_steps} - Loading LAS/LAZ tiles...\n")
         _progress(step, "Loading tiles")
 
-        eco = Ecomodel.combine_las_files(config.input_folder, eco)
+        eco = Ecomodel.combine_las_files(
+            config.input_folder, eco,
+            scalar_field=getattr(config, "scalar_field", "intensity"),
+            normalize_scalar=getattr(config, "normalize_scalar", False),
+        )
         if eco is None or len(eco._raw_tiles) == 0:
             raise FileNotFoundError(f"No LAS/LAZ files found in '{config.input_folder}'.")
 
@@ -230,7 +233,7 @@ def run_ecomodel_pipeline(
         for _fname in _las_files:
             _tile_update(_fname, "Pending")
     else:
-        _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+        _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
         _progress(step, "Skipped")
         for _fname in _las_files:
             _tile_update(_fname, "Pending")   # populate table even when resuming
@@ -240,7 +243,7 @@ def run_ecomodel_pipeline(
     # Step 2: optional duplicate removal on raw tiles
     step += 1
     if _should_run(step):
-        _log(f"Step {step}/{total_steps} – Removing duplicate points...\n")
+        _log(f"Step {step}/{total_steps} - Removing duplicate points...\n")
         _progress(step, "Deduplicating")
 
         if config.remove_duplicates:
@@ -252,7 +255,7 @@ def run_ecomodel_pipeline(
         else:
             _log("Skipping duplicate removal.\n")
     else:
-        _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+        _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
         _progress(step, "Skipped")
 
     _check_stop()
@@ -260,7 +263,7 @@ def run_ecomodel_pipeline(
     # Step 3: ground filtering on raw tiles
     step += 1
     if _should_run(step):
-        _log(f"Step {step}/{total_steps} – Filtering ground (CSF)...\n")
+        _log(f"Step {step}/{total_steps} - Filtering ground (CSF)...\n")
         _progress(step, "Ground filtering")
 
         eco.filter_ground(
@@ -271,7 +274,7 @@ def run_ecomodel_pipeline(
             remove_under_ground=config.remove_under_ground,
         )
     else:
-        _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+        _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
         _progress(step, "Skipped")
 
     _check_stop()
@@ -279,7 +282,7 @@ def run_ecomodel_pipeline(
     # Step 4: terrain model on raw tiles
     step += 1
     if _should_run(step):
-        _log(f"Step {step}/{total_steps} – Building terrain model...\n")
+        _log(f"Step {step}/{total_steps} - Building terrain model...\n")
         _progress(step, "Terrain model")
 
         eco.get_terrain_model(
@@ -287,7 +290,7 @@ def run_ecomodel_pipeline(
             grid_size=config.terrain_grid_size,
         )
     else:
-        _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+        _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
         _progress(step, "Skipped")
 
     _check_stop()
@@ -295,13 +298,13 @@ def run_ecomodel_pipeline(
     # Step 5: normalize raw tiles
     step += 1
     if _should_run(step):
-        _log(f"Step {step}/{total_steps} – Normalizing raw tiles...\n")
+        _log(f"Step {step}/{total_steps} - Normalizing raw tiles...\n")
         _progress(step, "Normalizing")
 
         eco.normalize_raw_tiles()
         _save_checkpoint("post_normalize")
     else:
-        _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+        _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
         _progress(step, "Skipped")
 
     _check_stop()
@@ -309,7 +312,7 @@ def run_ecomodel_pipeline(
     # Step 6: move raw tiles to device
     step += 1
     if _should_run(step):
-        _log(f"Step {step}/{total_steps} – Preparing tiles on device...\n")
+        _log(f"Step {step}/{total_steps} - Preparing tiles on device...\n")
         _progress(step, "Preparing tensors")
 
         for tile in eco._raw_tiles:
@@ -317,7 +320,7 @@ def run_ecomodel_pipeline(
                 continue
             tile.to(tile.device)
     else:
-        _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+        _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
         _progress(step, "Skipped")
 
     _check_stop()
@@ -325,7 +328,7 @@ def run_ecomodel_pipeline(
     # Step 7: subdivide once
     step += 1
     if _should_run(step):
-        _log(f"Step {step}/{total_steps} – Subdividing tiles (cube={config.cube_size}m)...\n")
+        _log(f"Step {step}/{total_steps} - Subdividing tiles (cube={config.cube_size}m)...\n")
         _progress(step, "Subdividing")
 
         eco.subdivide_tiles(
@@ -333,7 +336,7 @@ def run_ecomodel_pipeline(
             meter_conversion=config.meter_conversion,
         )
     else:
-        _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+        _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
         _progress(step, "Skipped")
 
     _check_stop()
@@ -342,7 +345,7 @@ def run_ecomodel_pipeline(
     if config.use_denoise:
         step += 1
         if _should_run(step):
-            _log(f"Step {step}/{total_steps} – Denoising subdivided tiles...\n")
+            _log(f"Step {step}/{total_steps} - Denoising subdivided tiles...\n")
             _progress(step, "Denoising")
 
             eco.denoise(
@@ -351,7 +354,7 @@ def run_ecomodel_pipeline(
                 resolution=config.denoise_resolution,
             )
         else:
-            _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+            _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
             _progress(step, "Skipped")
 
         _check_stop()
@@ -359,7 +362,7 @@ def run_ecomodel_pipeline(
     # Step 9: tree segmentation
     step += 1
     if _should_run(step):
-        _log(f"Step {step}/{total_steps} – Segmenting trees...\n")
+        _log(f"Step {step}/{total_steps} - Segmenting trees...\n")
         _progress(step, "Tree segmentation")
 
         eco.segment_trees(
@@ -367,24 +370,24 @@ def run_ecomodel_pipeline(
             save_clusters=config.save_clusters,
         )
     else:
-        _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+        _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
         _progress(step, "Skipped")
 
     _check_stop()
 
     # Step 10: restore terrain
     # Saved as "post_segmentation" here (not after segment_trees) so that
-    # restoring this checkpoint lands directly at QSM — reset_terrain is
+    # restoring this checkpoint lands directly at QSM - reset_terrain is
     # cheap bookkeeping and there is no point re-doing segmentation to get it.
     step += 1
     if _should_run(step):
-        _log(f"Step {step}/{total_steps} – Restoring terrain coordinates...\n")
+        _log(f"Step {step}/{total_steps} - Restoring terrain coordinates...\n")
         _progress(step, "Restoring terrain")
 
         eco.reset_terrain()
         _save_checkpoint("post_segmentation")
     else:
-        _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+        _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
         _progress(step, "Skipped")
 
     _check_stop()
@@ -393,23 +396,30 @@ def run_ecomodel_pipeline(
     if config.run_qsm:
         step += 1
         if _should_run(step):
-            _log(f"Step {step}/{total_steps} – Running QSM + RGI leaf separation...\n")
-            _progress(step, "QSM + leaf separation")
+            _leaf = "RGI leaf separation" if config.run_leaf_removal else "no leaf removal"
+            _log(f"Step {step}/{total_steps} - Running QSM ({_leaf})...\n")
+            _progress(step, f"QSM ({_leaf})")
 
-            eco.get_qsm_segments_rgi(
-                intensity_threshold=config.qsm_intensity_threshold,
-                save_leaf_removal_output=config.save_leaf_removal_output,
-            )
+            if config.run_leaf_removal:
+                eco.get_qsm_segments_rgi(
+                    intensity_threshold=config.qsm_intensity_threshold,
+                    save_leaf_removal_output=config.save_leaf_removal_output,
+                )
+            else:
+                eco.get_qsm_segments_rgi_no_leaf_removal(
+                    intensity_threshold=config.qsm_intensity_threshold,
+                    save_leaf_removal_output=config.save_leaf_removal_output,
+                )
             _save_checkpoint("post_qsm")
         else:
-            _log(f"Step {step}/{total_steps} – Skipped (checkpoint: {_checkpoint_tag})\n")
+            _log(f"Step {step}/{total_steps} - Skipped (checkpoint: {_checkpoint_tag})\n")
             _progress(step, "Skipped")
 
         _check_stop()
 
     # Step 12: recombine
     step += 1
-    _log(f"Step {step}/{total_steps} – Recombining tiles...\n")
+    _log(f"Step {step}/{total_steps} - Recombining tiles...\n")
     _progress(step, "Recombining")
 
     eco.recombine_tiles()
@@ -424,11 +434,11 @@ def run_ecomodel_pipeline(
     #
     # Matching strategy
     # -----------------
-    #  • snap_cloud is in normalised space; world XY = snap_cloud[:, :2] + eco.mean[:2]
-    #  • Both snap world XY and las.x / las.y are float64.
-    #  • Round to nearest 1 mm so that floating-point round-trip errors
+    #  - snap_cloud is in normalised space; world XY = snap_cloud[:, :2] + eco.mean[:2]
+    #  - Both snap world XY and las.x / las.y are float64.
+    #  - Round to nearest 1 mm so that floating-point round-trip errors
     #    (≈ 0.2 nm) never cause false mismatches.
-    #  • Sort LAS rows by (xi_mm, yi_mm) structured key; use np.searchsorted
+    #  - Sort LAS rows by (xi_mm, yi_mm) structured key; use np.searchsorted
     #    to locate each snapshot point in O(N log N).
     def _read_extra_las_fields(
         las_folder: str,
@@ -444,7 +454,7 @@ def run_ecomodel_pipeline(
         try:
             import laspy as _lp
         except ImportError:
-            _log("[Snapshot] laspy not available — skipping extra LAS fields.\n")
+            _log("[Snapshot] laspy not available - skipping extra LAS fields.\n")
             return {}
         import os as _os2
 
@@ -508,7 +518,7 @@ def run_ecomodel_pipeline(
                 for _dim in _las.point_format.dimension_names:
                     if _dim in _skip_dims:
                         continue
-                    # Human-readable display name: "return_number" → "Return Number"
+                    # Human-readable display name: "return_number" -> "Return Number"
                     _dname = " ".join(
                         w.capitalize() for w in _dim.replace("_", " ").split()
                     )
@@ -522,7 +532,7 @@ def run_ecomodel_pipeline(
                         _filled[_dname] = _np2.zeros(n, dtype=_np2.bool_)
 
                     # Only write rows not yet filled (first file that contains a
-                    # matching point wins — avoids overwriting with zeros from
+                    # matching point wins - avoids overwriting with zeros from
                     # a tile file that doesn't cover that point).
                     _to_fill = _matched & ~_filled[_dname]
                     result[_dname][_to_fill]  = _col[_las_rows[_to_fill]]
@@ -539,7 +549,7 @@ def run_ecomodel_pipeline(
 
     # ── Save subsampled snapshots ─────────────────────────────────────────────
     # save_point_cloud_snapshot returns the indices it used so we can pass
-    # exactly the same rows to save_segment_labels_snapshot — guaranteeing
+    # exactly the same rows to save_segment_labels_snapshot - guaranteeing
     # the two files are aligned row-for-row.
     if eco._raw_tiles:
         import numpy as _np
@@ -599,13 +609,20 @@ def run_ecomodel_pipeline(
 
     # Step 13: export cylinders
     step += 1
-    _log(f"Step {step}/{total_steps} – Exporting cylinder data...\n")
+    _log(f"Step {step}/{total_steps} - Exporting cylinder data...\n")
     _progress(step, "Exporting cylinders")
 
     eco.get_all_cylinders(filename=config.cylinder_filename)
 
+    # Per-tree QSM metrics (DBH, height, volume) gathered during get_all_cylinders.
+    _tree_metrics = getattr(eco, "all_tree_metrics", [])
+    if _tree_metrics:
+        from gui.results_io import save_tree_metrics
+        save_tree_metrics(run_dir, _tree_metrics)
+        _log(f"Tree metrics: {len(_tree_metrics)} trees\n")
+
     _out_path = str(run_dir / f"{config.cylinder_filename}.txt")
-    # Count from the exported file — tile.cylinder_radii after recombine_tiles()
+    # Count from the exported file - tile.cylinder_radii after recombine_tiles()
     # only holds the first subdivided tile's data (concat lines are commented out).
     try:
         import numpy as _np
@@ -633,7 +650,7 @@ def run_ecomodel_pipeline(
     # Step 14: optional plot
     if config.create_cylinder_plot:
         step += 1
-        _log(f"Step {step}/{total_steps} – Creating cylinder plot...\n")
+        _log(f"Step {step}/{total_steps} - Creating cylinder plot...\n")
         _progress(step, "Visualization")
 
         eco.create_cylinder_plot(config.cylinder_filename)

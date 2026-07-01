@@ -50,19 +50,95 @@ def get_last_las_field_names() -> list:
     return list(_las_scalar_fields)
 
 
-def load_point_cloud(file_path, intensity_threshold = 0, full_data = False):
+def list_las_scalar_fields(file_path):
+    """
+    Return the list of per-point scalar field (dimension) names in a LAS/LAZ
+    file, in file order.
+
+    Used by the GUI to populate the "scalar field" selector so the user can
+    map a non-standard channel (e.g. RIEGL ``Reflectance``) to the working
+    intensity column.  Returns an empty list for non-LAS inputs or on error.
+    """
+    if not (file_path.lower().endswith(".las") or file_path.lower().endswith(".laz")):
+        return []
+    try:
+        with laspy.open(file_path) as las:
+            return list(las.header.point_format.dimension_names)
+    except Exception:
+        return []
+
+
+def _resolve_scalar_field(las_pts, scalar_field, file_path):
+    """
+    Fetch the named scalar field from a laspy point record as float64.
+
+    Matches case-insensitively (LAS extra-dim names preserve author casing,
+    e.g. ``Reflectance``), and raises a clear error listing the available
+    fields when the requested one is absent.
+    """
+    names = list(las_pts.point_format.dimension_names)
+    if scalar_field in names:
+        chosen = scalar_field
+    else:
+        lower = {n.lower(): n for n in names}
+        if scalar_field.lower() in lower:
+            chosen = lower[scalar_field.lower()]
+        else:
+            raise ValueError(
+                f"Scalar field {scalar_field!r} not found in {file_path}. "
+                f"Available fields: {names}"
+            )
+    return np.asarray(las_pts[chosen], dtype=np.float64)
+
+
+def _normalize_scalar_to_intensity_range(vals):
+    """
+    Linearly rescale a scalar field to the standard 0-65535 intensity range.
+
+    Makes fields with negative or fractional units (e.g. RIEGL reflectance in
+    dB, roughly -20..0) usable with the pipeline's positive intensity
+    thresholds.  A constant or empty field maps to all-zeros.
+
+    NOTE: normalization is per-file.  For multi-tile runs the scale is derived
+    independently per tile, which is approximately consistent for tiles from
+    the same scanner but is not a global calibration.
+    """
+    if vals.size == 0:
+        return vals
+    vmin = float(vals.min())
+    vmax = float(vals.max())
+    if vmax <= vmin:
+        return np.zeros_like(vals)
+    return (vals - vmin) / (vmax - vmin) * 65535.0
+
+
+def load_point_cloud(file_path, intensity_threshold = 0, full_data = False,
+                     scalar_field = "intensity", normalize_scalar = False):
     """
     Load a point cloud from LAS or LAZ files.
 
     Args:
     file_path : str
         Path to the LAS or LAZ file.
+    intensity_threshold : float
+        Points whose working scalar value is < this are dropped (>= keeps).
+    full_data : bool
+        When True, also return the Nx4 point_data array.
+    scalar_field : str
+        Which LAS per-point dimension to load into column 3 (the "intensity"
+        working column).  Defaults to ``"intensity"`` (backward compatible).
+        Match is case-insensitive so ``"reflectance"`` resolves a
+        ``Reflectance`` extra dimension.  Ignored for .xyz/.txt input.
+    normalize_scalar : bool
+        When True, linearly rescale the chosen field to 0-65535 so fields with
+        negative/fractional units (e.g. reflectance in dB) work with the
+        positive intensity thresholds.  Applied before the threshold filter.
 
     Returns:
     point_cloud : ndarray
         Nx3 matrix of point coordinates (x, y, z).
     point_data : ndarray (when full_data=True)
-        Nx4 matrix — columns 0-2 are x,y,z, column 3 is intensity.
+        Nx4 matrix - columns 0-2 are x,y,z, column 3 is the chosen scalar.
 
     NOTE: point_data is intentionally kept at exactly 4 columns so that
     ecomodel's torch-based subdivide_tiles (which concatenates point_data
@@ -92,7 +168,10 @@ def load_point_cloud(file_path, intensity_threshold = 0, full_data = False):
         point_data[:, 0] = _las_pts.x
         point_data[:, 1] = _las_pts.y
         point_data[:, 2] = _las_pts.z
-        point_data[:, 3] = _las_pts.intensity
+        _scalar = _resolve_scalar_field(_las_pts, scalar_field, file_path)
+        if normalize_scalar:
+            _scalar = _normalize_scalar_to_intensity_range(_scalar)
+        point_data[:, 3] = _scalar
         del _las_pts          # free laspy arrays before the intensity filter
         mask = point_data[:, 3] >= intensity_threshold
         point_data = point_data[mask]
