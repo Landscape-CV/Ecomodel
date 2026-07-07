@@ -1,6 +1,7 @@
 # Ignore all generated assets, pointclouds, and scenes
 # Ignore all generated assets, pointclouds, and scenes
 output/
+testdataset/
 
 # Ignore Python cache files
 __pycache__/
