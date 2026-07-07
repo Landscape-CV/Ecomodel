@@ -109,8 +109,55 @@ def benchmark_segment_rgi(laz_path, labels_path):
         print(f"  [Error] Metrics computation failed: {e}")
         return None, None, None, None
 
+def process_tile(labels_file, log_dir):
+    import os, sys, time
+    base_name = labels_file.replace("_labels.npy", "")
+    tile_name = os.path.basename(base_name)
+    laz_file = base_name + "_scan.laz"
+    
+    if not os.path.exists(laz_file):
+        return None
+        
+    log_file = os.path.join(log_dir, f"{tile_name}.log")
+    orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
+    
+    start_time = time.time()
+    try:
+        with open(log_file, "w") as f:
+            sys.stdout = f
+            sys.stderr = f
+            
+            print(f"Starting processing for {tile_name}...")
+            p, r, f1, iou = benchmark_segment_rgi(laz_file, labels_file)
+            
+            duration = time.time() - start_time
+            if p is not None:
+                return {
+                    "tile": tile_name,
+                    "algorithm": "SegmentRGI",
+                    "precision": p,
+                    "recall": r,
+                    "f1_score": f1,
+                    "iou": iou,
+                    "duration_sec": duration
+                }
+            return {"tile": tile_name, "error": "No valid points", "duration_sec": duration}
+    except Exception as e:
+        duration = time.time() - start_time
+        with open(log_file, "a") as f:
+            f.write(f"\nException occurred: {e}\n")
+        return {"tile": tile_name, "error": str(e), "duration_sec": duration}
+    finally:
+        sys.stdout = orig_stdout
+        sys.stderr = orig_stderr
+
 def main():
     import argparse
+    import concurrent.futures
+    import multiprocessing
+    import time
+    
     parser = argparse.ArgumentParser(description="Benchmark Separation Algorithms.")
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -119,6 +166,11 @@ def main():
     
     parser.add_argument("--dataset_dir", type=str, default=default_dataset, help="Path to testdataset dir")
     parser.add_argument("--out_csv", type=str, default=default_out, help="Output CSV path")
+    
+    # Default to cpu_count - 1 to leave room for the system
+    default_workers = max(1, multiprocessing.cpu_count() - 1)
+    parser.add_argument("--num_workers", type=int, default=default_workers, help="Number of worker processes")
+    
     args = parser.parse_args()
     
     base_dir = os.path.abspath(args.dataset_dir)
@@ -126,38 +178,71 @@ def main():
     
     print(f"Found {len(labels_files)} labeled point clouds to benchmark.")
     
+    log_dir = os.path.join(os.path.dirname(args.out_csv), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    print(f"Logs for each tile will be saved to {log_dir}")
+    
     results = []
     
-    for labels_file in labels_files:
-        base_name = labels_file.replace("_labels.npy", "")
-        laz_file = base_name + "_scan.laz"
+    # We use ProcessPoolExecutor for CPU-bound multiprocessing
+    print(f"Starting ProcessPoolExecutor with {args.num_workers} workers...")
+    
+    main_start_time = time.time()
+    
+    with concurrent.futures.ProcessPoolExecutor(max_workers=args.num_workers) as executor:
+        futures = {executor.submit(process_tile, lf, log_dir): lf for lf in labels_files}
         
-        if not os.path.exists(laz_file):
-            continue
+        # as_completed yields futures as they finish
+        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+            res = future.result()
             
-        p, r, f1, iou = benchmark_segment_rgi(laz_file, labels_file)
-        
-        if p is not None:
-            results.append({
-                "tile": os.path.basename(base_name),
-                "algorithm": "SegmentRGI",
-                "precision": p,
-                "recall": r,
-                "f1_score": f1,
-                "iou": iou
-            })
+            # Print progress to the main console
+            tile_file = futures[future]
+            tile_name = os.path.basename(tile_file).replace("_labels.npy", "")
             
-            # Save progressively so data isn't lost if interrupted
-            pd.DataFrame(results).to_csv(args.out_csv, index=False)
+            tiles_finished = i + 1
+            tiles_total = len(labels_files)
+            tiles_remaining = tiles_total - tiles_finished
+            
+            elapsed_time = time.time() - main_start_time
+            avg_time_per_tile = elapsed_time / tiles_finished
+            eta_seconds = avg_time_per_tile * tiles_remaining
+            
+            eta_mins, eta_secs = divmod(int(eta_seconds), 60)
+            eta_hours, eta_mins = divmod(eta_mins, 60)
+            
+            eta_str = ""
+            if eta_hours > 0:
+                eta_str += f"{eta_hours}h "
+            if eta_mins > 0 or eta_hours > 0:
+                eta_str += f"{eta_mins}m "
+            eta_str += f"{eta_secs}s"
+            
+            if res is not None:
+                tile_duration = res.get('duration_sec', 0)
+                dur_mins, dur_secs = divmod(int(tile_duration), 60)
+                
+                print(f"[{tiles_finished}/{tiles_total}] Finished {tile_name} (took {dur_mins}m {dur_secs}s) - ETA: {eta_str}")
+                
+                # Only save valid results to CSV
+                if "error" not in res:
+                    results.append(res)
+                    # Save progressively so data isn't lost if interrupted
+                    pd.DataFrame(results).to_csv(args.out_csv, index=False)
+            else:
+                print(f"[{tiles_finished}/{tiles_total}] Finished {tile_name} (skipped/failed) - ETA: {eta_str}")
             
     # Print final results
     if results:
         df = pd.DataFrame(results)
-        print(f"\nFinished processing. Saved benchmark results to {args.out_csv}")
+        total_time = time.time() - main_start_time
+        t_hours, remainder = divmod(int(total_time), 3600)
+        t_mins, t_secs = divmod(remainder, 60)
+        print(f"\nFinished processing in {t_hours}h {t_mins}m {t_secs}s. Saved benchmark results to {args.out_csv}")
         
         # Print summary
         print("\n--- Summary ---")
-        summary = df.groupby("algorithm")[["precision", "recall", "f1_score", "iou"]].mean()
+        summary = df.groupby("algorithm")[["precision", "recall", "f1_score", "iou", "duration_sec"]].mean()
         print(summary)
 
 if __name__ == "__main__":
