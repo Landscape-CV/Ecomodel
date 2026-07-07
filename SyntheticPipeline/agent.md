@@ -29,3 +29,7 @@ This document serves as a knowledge base containing key learnings, architectural
   - *Distance Decay:* Added an inverse-square law (`1/R^2`) distance decay to further approximate realistic signal loss.
 - **Data Export (.laz):** Instead of using a `.ply` RGB color hack or stripping data with `.xyz`, the simulator now uses `laspy` to natively export a compressed `.laz` (LASer) file. The 0-1 intensity is scaled back up to a 16-bit integer (0-65535) and natively embedded into the `las.intensity` dimension, matching true professional LiDAR datasets.
 - **Scan Distribution:** A realistic survey requires overlapping viewpoints to prevent occlusion. Instead of clustering scanners near the origin `[0,0]`, `simulator_open3d.py` dynamically computes random `[X, Y, 1.5]` tripod coordinates scattered uniformly across the entire bounding box area.
+
+## 5. Large-Scale Dataset Generation Strategy
+- **Asset Pooling Optimization:** When generating thousands of tiles (e.g. 125 tiles per vegetation type), running the external procedural generator (like Java Arbaro) for every single tree in every tile is extremely slow (O(Tiles * Trees) subprocess calls).
+- **Solution:** Generate a large pool of tree variants upfront (e.g., 50 variations of a given species) just once per vegetation type. The `ForestAssembler` can then construct endless unique scene combinations by randomly sampling from this pre-generated pool, applying random coordinate placements, random Z-axis yaw rotations, and random scale factors.
