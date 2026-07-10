@@ -259,17 +259,23 @@ def run_ecomodel_lite_pipeline(
             _check_stop()
             _progress(tile_offset + 5, total_steps,
                       f"Tile {i+1}/{total_tiles} - {_STEP_LABELS[4]}")
-            _log(f"[Lite]   [5/{_STEPS_PER_TILE}] Instance segmentation...\n")
-
-            full_data, instance_labels = model.perform_instance_segmentation(
-                full_data, output_dir=str(run_dir / tile_name)
-            )
-            if full_data is None or instance_labels is None:
-                _log(f"[Lite]   WARNING: instance segmentation failed. Skipping tile.\n")
-                _tile_update(tile_name, "Skipped", 0, "")
-                continue
-            n_trees = int(np.sum(np.unique(instance_labels) != -1))
-            _log(f"[Lite]   Segmentation complete - {n_trees} tree segment(s)\n")
+            if getattr(config, "lite_single_tree", False):
+                # Single-tree mode: skip the segmenter, label every point as one
+                # instance so the QSM step reconstructs the whole cloud in one piece.
+                _log(f"[Lite]   [5/{_STEPS_PER_TILE}] Segmentation skipped "
+                     f"(single-tree mode) - treating tile as one tree.\n")
+                instance_labels = np.zeros(len(full_data), dtype=int)
+            else:
+                _log(f"[Lite]   [5/{_STEPS_PER_TILE}] Instance segmentation...\n")
+                full_data, instance_labels = model.perform_instance_segmentation(
+                    full_data, output_dir=str(run_dir / tile_name)
+                )
+                if full_data is None or instance_labels is None:
+                    _log(f"[Lite]   WARNING: instance segmentation failed. Skipping tile.\n")
+                    _tile_update(tile_name, "Skipped", 0, "")
+                    continue
+                n_trees = int(np.sum(np.unique(instance_labels) != -1))
+                _log(f"[Lite]   Segmentation complete - {n_trees} tree segment(s)\n")
             if config.debug_mode:
                 _debug_save(
                     run_dir / tile_name,

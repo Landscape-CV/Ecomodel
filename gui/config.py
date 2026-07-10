@@ -50,7 +50,10 @@ class EcomodelConfig:
     qsm_intensity_threshold: int = 0
     save_leaf_removal_output: bool = False
     run_qsm: bool = True
-    run_leaf_removal: bool = True
+    # EXPERIMENT (2026-07-10): default off so SmartQSM gets the full leaf-on cloud
+    # (matches Modal's leaf-on config; avoids RGI stripping thin-branch wood ->
+    # fewer gaps). Flip back to True to re-enable RGI leaf removal.
+    run_leaf_removal: bool = False
 
     # ── Visualisation ────────────────────────────────────────────────────────
     create_cylinder_plot: bool = False
@@ -118,9 +121,19 @@ class EcomodelConfig:
     lite_segmenter_type: str = "scanline"   # "scanline" | "treelearn"
     treelearn_config_path: str = ""         # path to TreeLearn YAML config
     treelearn_use_gpu: bool = True          # use CUDA; False = CPU (very slow)
+    # Single-tree mode: skip segmentation and treat the whole tile as ONE tree,
+    # so the QSM step reconstructs it in one piece (avoids over-segmenting a
+    # single tree into fragments). Use ONLY when the input is a single tree; a
+    # multi-tree tile would collapse into one tangled trunk.
+    lite_single_tree: bool = False
 
     # ── Lite: QSM method ──────────────────────────────────────────────────────
     lite_qsm_method: str = "treeqsm"        # "treeqsm" | "smartqsm"
     smartqsm_dir: str = ""
     smartqsm_python: str = ""
     smartqsm_config: str = ""
+    # Remote GPU service URL. When set (or overridden by env SMARTQSM_URL),
+    # segments are POSTed to this endpoint instead of run via local subprocess.
+    # Defaults to the lab's deployed Modal serverless GPU backend, so the app
+    # works out of the box with no setup; env SMARTQSM_URL still overrides.
+    smartqsm_url: str = "https://nisulay--smartqsm-web.modal.run"

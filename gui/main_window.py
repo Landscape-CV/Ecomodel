@@ -277,6 +277,15 @@ class EcomodelMainWindow(QMainWindow):
         ll.addWidget(self._smartqsm_widget, 4, 0, 1, 2)
         self._lite_qsm_method.currentIndexChanged.connect(self._on_lite_qsm_method_changed)
 
+        self._lite_single_tree = QCheckBox("Single tree (skip segmentation)")
+        self._lite_single_tree.setChecked(getattr(self._defaults, "lite_single_tree", False))
+        self._lite_single_tree.setToolTip(
+            "Use ONLY when the tile is a single tree. Skips segmentation and sends "
+            "the whole cloud to the QSM step as one piece (avoids over-segmenting "
+            "one tree into fragments). A multi-tree tile would collapse into one tangle."
+        )
+        ll.addWidget(self._lite_single_tree, 5, 0, 1, 2)
+
         lg.setVisible(False)
         layout.addWidget(lg)
 
@@ -756,6 +765,7 @@ class EcomodelMainWindow(QMainWindow):
             lite_patch_diam2_max=self._lite_patch_diam2_max.value(),
             lite_ball_rad2=self._lite_ball_rad2.value(),
             lite_segmenter_type="treelearn" if self._lite_segmenter.currentIndex() == 1 else "scanline",
+            lite_single_tree=self._lite_single_tree.isChecked(),
             treelearn_config_path=self._treelearn_config.text().strip(),
             treelearn_use_gpu=self._treelearn_gpu.isChecked(),
             lite_qsm_method="smartqsm" if self._lite_qsm_method.currentIndex() == 1 else "treeqsm",
