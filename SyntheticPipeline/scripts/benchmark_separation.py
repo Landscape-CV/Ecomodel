@@ -34,7 +34,7 @@ def compute_metrics(gt_labels, pred_labels):
     
     return precision, recall, f1, iou
 
-def benchmark_segment_rgi(laz_path, labels_path):
+def benchmark_segment_rgi(laz_path, labels_path, visualize=False):
     print(f"\nBenchmarking SegmentRGI on {os.path.basename(laz_path)}...")
     
     # Load point cloud
@@ -50,7 +50,7 @@ def benchmark_segment_rgi(laz_path, labels_path):
     print("  [Step 1] Running Tree Instance Segmentation (Scanline)...")
     try:
         segmenter = SegmenterScanline()
-        filtered_points, instance_ids, orig_indices = segmenter.segment(points, return_indices=True)
+        filtered_points, instance_ids, orig_indices = segmenter.process_with_indices(points)
     except Exception as e:
         print(f"  [Error] Instance Segmentation failed: {e}")
         return None, None, None, None
@@ -104,12 +104,50 @@ def benchmark_segment_rgi(laz_path, labels_path):
         # Calculate metrics
         p, r, f1, iou = compute_metrics(valid_gt, valid_pred)
         print(f"  -> Precision: {p:.4f}, Recall: {r:.4f}, F1: {f1:.4f}, IoU: {iou:.4f}")
+        
+        if visualize:
+            import open3d as o3d
+            viz_points = points[valid_mask][:, :3]
+            v_gt = valid_gt
+            v_pred = valid_pred
+            
+            gt_pcd = o3d.geometry.PointCloud()
+            gt_pcd.points = o3d.utility.Vector3dVector(viz_points)
+            gt_colors = np.zeros((len(viz_points), 3))
+            gt_colors[v_gt == 1] = [0, 1, 0] # Wood=Green
+            gt_colors[v_gt == 0] = [1, 0, 0] # Leaf=Red
+            gt_pcd.colors = o3d.utility.Vector3dVector(gt_colors)
+            
+            pred_pcd = o3d.geometry.PointCloud()
+            pred_pcd.points = o3d.utility.Vector3dVector(viz_points)
+            pred_colors = np.zeros((len(viz_points), 3))
+            pred_colors[v_pred == 1] = [0, 1, 0]
+            pred_colors[v_pred == 0] = [1, 0, 0]
+            pred_pcd.colors = o3d.utility.Vector3dVector(pred_colors)
+            
+            bbox = gt_pcd.get_axis_aligned_bounding_box()
+            extent = bbox.get_extent()
+            pred_pcd.translate(np.array([extent[0] * 1.2, 0, 0]))
+            
+            print("Saving visualization: Ground Truth (Left) vs Prediction (Right). Green=Wood, Red=Leaf")
+            
+            # Combine point clouds
+            combined_pcd = gt_pcd + pred_pcd
+            
+            # Create visualizations directory
+            viz_dir = os.path.join(os.path.dirname(os.path.dirname(laz_path)), "output", "visualizations")
+            os.makedirs(viz_dir, exist_ok=True)
+            
+            out_file = os.path.join(viz_dir, os.path.basename(laz_path).replace(".laz", "_viz.ply"))
+            o3d.io.write_point_cloud(out_file, combined_pcd)
+            print(f"Saved side-by-side visualization to: {out_file}")
+            
         return p, r, f1, iou
     except Exception as e:
         print(f"  [Error] Metrics computation failed: {e}")
         return None, None, None, None
 
-def process_tile(labels_file, log_dir):
+def process_tile(labels_file, log_dir, visualize=False):
     import os, sys, time
     base_name = labels_file.replace("_labels.npy", "")
     tile_name = os.path.basename(base_name)
@@ -129,7 +167,7 @@ def process_tile(labels_file, log_dir):
             sys.stderr = f
             
             print(f"Starting processing for {tile_name}...")
-            p, r, f1, iou = benchmark_segment_rgi(laz_file, labels_file)
+            p, r, f1, iou = benchmark_segment_rgi(laz_file, labels_file, visualize=visualize)
             
             duration = time.time() - start_time
             if p is not None:
@@ -170,11 +208,22 @@ def main():
     # Default to cpu_count - 1 to leave room for the system
     default_workers = max(1, multiprocessing.cpu_count() - 1)
     parser.add_argument("--num_workers", type=int, default=default_workers, help="Number of worker processes")
+    parser.add_argument("--sample_n", type=int, default=None, help="Randomly sample N tiles")
+    parser.add_argument("--visualize", action="store_true", help="Visualize GT vs Pred side-by-side")
     
     args = parser.parse_args()
     
+    if args.visualize:
+        print("Visualization enabled. Side-by-side point clouds will be saved to output/visualizations/")
+    
     base_dir = os.path.abspath(args.dataset_dir)
     labels_files = glob.glob(os.path.join(base_dir, "*_labels.npy"))
+    
+    if args.sample_n and args.sample_n < len(labels_files):
+        import random
+        random.seed(42)
+        labels_files = random.sample(labels_files, args.sample_n)
+        print(f"Randomly sampled {args.sample_n} point clouds.")
     
     print(f"Found {len(labels_files)} labeled point clouds to benchmark.")
     
@@ -190,7 +239,7 @@ def main():
     main_start_time = time.time()
     
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.num_workers) as executor:
-        futures = {executor.submit(process_tile, lf, log_dir): lf for lf in labels_files}
+        futures = {executor.submit(process_tile, lf, log_dir, args.visualize): lf for lf in labels_files}
         
         # as_completed yields futures as they finish
         for i, future in enumerate(concurrent.futures.as_completed(futures)):
