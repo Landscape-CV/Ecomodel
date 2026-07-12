@@ -112,6 +112,43 @@ For full mathematical definitions of these properties, refer to Jason Weber & Jo
    python run_simulation.py --config configs/my_custom_config.json
    ```
 
+## Quickstart: Generating & Benchmarking a Dataset
+
+If you are new to the project and want to quickly generate synthetic point clouds and benchmark the segmentation models against them, follow these 3 steps:
+
+**1. Generate the Dataset**
+This script reads tree types from `lib/arbaro/trees`, builds random forests, and simulates LiDAR scans, saving them to `testdataset/`.
+```bash
+python scripts/generate_test_dataset.py
+```
+*(Note: To prevent out-of-memory errors and keep generation fast, the default parameters in this script are downscaled for lower ray density and fewer trees per tile).*
+
+**2. Label the Point Clouds (Ground Truth)**
+The segmentation models need to know which points are wood and which are leaves. This script computes distances to the GT trunk meshes to create binary labels (`*_labels.npy`).
+```bash
+python scripts/label_gt_points.py
+```
+
+**3. Run the Benchmark**
+Now evaluate the `SegmentRGI` model against your newly generated dataset.
+```bash
+python scripts/benchmark_separation.py --dataset_dir testdataset/ --out_csv output/benchmark_results.csv --num_workers 3
+```
+
+## Benchmarking Arguments
+
+The pipeline includes a script (`scripts/benchmark_separation.py`) to evaluate tree segmentation models (e.g., `SegmentRGI`) against the synthetic ground truth datasets.
+
+To run the benchmark across your generated dataset:
+```bash
+python scripts/benchmark_separation.py --dataset_dir testdataset/ --out_csv output/benchmark_results.csv
+```
+
+**Key Arguments:**
+- `--num_workers <int>`: Leverages Python's `ProcessPoolExecutor` to run multiple tiles in parallel, speeding up evaluation significantly. Defaults to `cpu_count() - 1`.
+- `--sample_n <int>`: Randomly samples a subset of tiles (e.g., `--sample_n 5`) to run a quick test instead of benchmarking the entire dataset.
+- `--visualize`: Instead of popping up a UI window that blocks parallel workers, this flag generates colored side-by-side `.ply` point clouds showing the Ground Truth (left) vs Prediction (right). These are saved directly to `output/visualizations/` for easy review in software like CloudCompare.
+
 ## Requirements
 
 Ensure the parent environment dependencies are installed, particularly:

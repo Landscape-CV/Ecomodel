@@ -33,3 +33,8 @@ This document serves as a knowledge base containing key learnings, architectural
 ## 5. Large-Scale Dataset Generation Strategy
 - **Asset Pooling Optimization:** When generating thousands of tiles (e.g. 125 tiles per vegetation type), running the external procedural generator (like Java Arbaro) for every single tree in every tile is extremely slow (O(Tiles * Trees) subprocess calls).
 - **Solution:** Generate a large pool of tree variants upfront (e.g., 50 variations of a given species) just once per vegetation type. The `ForestAssembler` can then construct endless unique scene combinations by randomly sampling from this pre-generated pool, applying random coordinate placements, random Z-axis yaw rotations, and random scale factors.
+
+## 6. Benchmarking & Downscaling
+- **Memory Footprint:** Running benchmarks on massive point clouds (e.g. 0.05-degree rays and 0.01m voxels generating 100MB+ per tile) easily causes 32GB RAM machines to OOM during KDTree construction and scanline processing.
+- **Downscale Strategy:** For development and regular benchmarking, `resolution_theta_deg` and `resolution_phi_deg` are increased to `0.2`, and `voxel_downsample_size` is increased to `0.05` (5cm). This shrinks the point clouds by over ~16x and allows fast processing (seconds per tile instead of minutes/hours) while maintaining structural tree integrity for algorithms.
+- **Batching:** `generate_test_dataset.py` restricts tree pools and tile batches to ~10-20 to ensure generation takes minutes rather than days.

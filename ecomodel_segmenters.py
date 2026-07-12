@@ -16,13 +16,16 @@ import networkx as nx
 import cc3d
 import matplotlib.pyplot as plt
 import os
-from pc_skeletor import LBC, SLBC
-from pc_skeletor.utility import simplify_graph
+try:
+    from pc_skeletor import LBC, SLBC
+    from pc_skeletor.utility import simplify_graph
+    import mistree as mist
+except ImportError:
+    pass
 
 import networkx as nx
 import matplotlib.pyplot as plt
 from copy import deepcopy
-import mistree as mist
 from Utils.Utils import load_point_cloud
 from Utils.plot_tools import  ResultsPlotter
 import numpy as np
@@ -441,11 +444,67 @@ class SegmenterScanline:
         mask = tile.segment_labels >-2#filters out points that could not be connected, ideal will segment better and this will be uneccesary
         print("UNIQUE LABELS", np.unique(tile.segment_labels))
         
-        point_cloud = tile.cloud[mask]
-        labels = tile.segment_labels[mask]
+        point_cloud_out = tile.cloud[mask]
+        labels_out = tile.segment_labels[mask]
 
 
-        return point_cloud, labels
+        return point_cloud_out, labels_out
+
+    def process_with_indices(self, point_cloud):
+        """
+        Purely new function added for benchmarking. 
+        Same logic as process() but also tracks and returns original indices.
+        """
+        inputs = {'PatchDiam1': 0.15, 'BallRad1':.15, 'nmin1': 25}
+        tile = Tile(point_cloud[:, :3], point_cloud)
+        orig_indices = np.arange(len(point_cloud))
+
+        cover = cover_sets(tile.get_cloud_as_array(), inputs, qsm =False, device = 'cpu', full_point_data = tile.point_data)
+        if len(cover['sets']) == 0:
+            return None, None, None
+        
+        labels = cover['sets']
+        
+        noise_mask = labels >-1
+        tile.cloud = tile.cloud[noise_mask]
+        tile.point_data = tile.point_data[noise_mask]
+        labels = labels[noise_mask]
+        tile.cover_sets=labels
+        orig_indices = orig_indices[noise_mask]
+
+        if len(labels) == 0:
+            return None, None, None
+
+
+        default_arguments = {
+            "max_dist": 0.16,
+            "min_height" :.3,  
+            "connect_using_midpoint" :False, 
+            "base_height" :.65, 
+            "base_dist_multiplier" :2.5, 
+            "connect_ambiguous_points" :True, 
+            "fix_overlapping_segments" :False, 
+            "layer_size" :.16, 
+            "min_Z" :float(np.min(tile.cloud[:,2])),
+            "combine_nearby_bases" :True ,
+        }
+
+        tuned_arguments = {
+            "max_dist": 0.3,
+            "base_height" : 1, 
+            "layer_size" :0.15, 
+            "combine_nearby_bases" :False,
+        }
+
+        default_arguments.update(tuned_arguments)
+        segment_point_cloud(tile,**default_arguments)
+        mask = tile.segment_labels >-2
+        
+        point_cloud_out = tile.point_data[mask]
+        labels_out = tile.segment_labels[mask]
+        orig_indices = orig_indices[mask]
+
+        return point_cloud_out, labels_out, orig_indices
 
     def old(self, point_cloud, intensity_threshold = 0):
         tile = Tile(point_cloud[:, :3], point_cloud)

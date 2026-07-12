@@ -31,20 +31,20 @@ def main():
     
     # Noise parameters
     noise_params = {
-        "resolution_theta_deg": 0.05,
-        "resolution_phi_deg": 0.05,
+        "resolution_theta_deg": 0.2,
+        "resolution_phi_deg": 0.2,
         "distance_noise_std": 0.005,
         "wind_sway_std": 0.02,
         "beam_divergence_noise_std": 0.005,
-        "voxel_downsample_size": 0.01,
+        "voxel_downsample_size": 0.05,
         "wind_x": 0.0,
         "wind_y": 0.0
     }
     
     area_size = 20.0
-    pool_size = 50
+    pool_size = 10
     batches = 1
-    tiles_per_batch = 25
+    tiles_per_batch = 10
     
     xml_files = glob.glob(os.path.join(arbaro_trees_dir, "*.xml"))
     
@@ -86,8 +86,8 @@ def main():
                     shutil.rmtree(pc_dir)
                 os.makedirs(pc_dir, exist_ok=True)
                 
-                num_trees = random.randint(2, 8)
-                num_scans = random.randint(3, 5)
+                num_trees = random.randint(2, 5)
+                num_scans = random.randint(2, 3)
                 scene_name = f"{veg_name}_scene"
                 
                 # Assemble scene
