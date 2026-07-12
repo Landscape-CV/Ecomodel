@@ -10,7 +10,7 @@ results*
 *.nbi
 *.nbc
 *DS_Store
-*.spec\
+*.spec
 *.pickle
 .venv
 .env
@@ -32,3 +32,17 @@ ecomodel_log.log
 test_mangrove.json
 *.obj
 test_assembler.log
+
+# Benchmark and Pipeline output temp files
+SyntheticPipeline/output/logs/temp_*/
+*_refactored.py
+temp_wheels/
+
+# Data files
+*.las
+*.laz
+*.npy
+*.ply
+*.dxf
+*.mat
+__pycache__/

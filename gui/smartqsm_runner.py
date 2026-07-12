@@ -65,7 +65,7 @@ def run_smartqsm_on_segments(point_cloud, instance_labels, out_dir, config, log=
     if not files:
         return empty
 
-    cmd = [sq_py, os.path.join("entrypoints", "smartqsm.py"), "-y", "-c", sq_cfg, *files]
+    cmd = [sq_py, os.path.join("entrypoints", "smartqsm.py"), "-y", "-t", "-c", sq_cfg, *files]
     _log(f"[SmartQSM] running on {len(files)} segment(s)...\n")
     try:
         subprocess.run(cmd, cwd=sq_dir, capture_output=True, text=True)

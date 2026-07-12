@@ -41,10 +41,10 @@ def main():
         "wind_y": 0.0
     }
     
-    area_size = 20.0
-    pool_size = 10
+    area_size = 8.0
+    pool_size = 5
     batches = 1
-    tiles_per_batch = 10
+    tiles_per_batch = 3
     
     xml_files = glob.glob(os.path.join(arbaro_trees_dir, "*.xml"))
     
