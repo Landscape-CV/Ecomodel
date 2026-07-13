@@ -6,7 +6,7 @@ import os
 import argparse
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot performance by species")
+    parser = argparse.ArgumentParser(description="Plot PR by species")
     parser.add_argument("--csv", type=str, required=True, help="Path to benchmark_results_single.csv")
     parser.add_argument("--out", type=str, required=True, help="Path to output png")
     args = parser.parse_args()
@@ -17,7 +17,9 @@ def main():
     df['species'] = df['tile'].apply(lambda x: x.split('_tile_')[0])
     
     # Group by species and algorithm, and calculate mean metrics
-    metrics = ['trunk_f1_score', 'canopy_f1_score', 'trunk_iou', 'canopy_iou']
+    # Layout: Top row = Precision, Bottom row = Recall
+    #         Left col = Trunk, Right col = Canopy
+    metrics = ['trunk_precision', 'canopy_precision', 'trunk_recall', 'canopy_recall']
     summary = df.groupby(['species', 'algorithm'])[metrics].mean().reset_index()
     
     # Set up the plot grid (2x2 subplots)
@@ -25,14 +27,14 @@ def main():
     sns.set_theme(style="whitegrid")
     
     titles = {
-        'trunk_f1_score': "Trunk (Wood) F1 Score",
-        'canopy_f1_score': "Canopy (Leaf) F1 Score",
-        'trunk_iou': "Trunk (Wood) IoU",
-        'canopy_iou': "Canopy (Leaf) IoU"
+        'trunk_precision': "Trunk (Wood) Precision",
+        'trunk_recall': "Trunk (Wood) Recall",
+        'canopy_precision': "Canopy (Leaf) Precision",
+        'canopy_recall': "Canopy (Leaf) Recall"
     }
     
     for ax, metric in zip(axes.flatten(), metrics):
-        sns.barplot(x="species", y=metric, hue="algorithm", data=summary, palette="viridis", ax=ax)
+        sns.barplot(x="species", y=metric, hue="algorithm", data=summary, palette="magma", ax=ax)
         ax.set_title(titles[metric], fontsize=16)
         ax.set_xlabel("")
         ax.set_ylabel("Score", fontsize=12)
@@ -48,7 +50,7 @@ def main():
     
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     plt.savefig(args.out, dpi=300, bbox_inches='tight')
-    print(f"Saved comprehensive species comparison plot to {args.out}")
+    print(f"Saved comprehensive PR species comparison plot to {args.out}")
 
 if __name__ == "__main__":
     main()
