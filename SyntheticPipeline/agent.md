@@ -1,40 +1,103 @@
-# SyntheticPipeline - Agent Knowledge Base
+# SyntheticPipeline — Agent Knowledge Base
 
-This document serves as a knowledge base containing key learnings, architectural decisions, and physics-based logic implemented during the development of the Synthetic Pipeline.
+Key learnings, architectural decisions, and physics logic from developing the synthetic LiDAR pipeline. Use this alongside `README.md` for operational context.
 
 ## 1. Blender Geometry & Memory Constraints
-- **Procedural Generation Memory:** Generating complex procedural trees (like Mangroves) via Blender's Python API requires enormous RAM during mesh realization. 
-- **Decimate Strategy:** A `decimate_ratio` of `0.2` to `0.3` was found to be the sweet spot for a 32GB RAM machine. This retains enough geometric detail (4x more than standard 0.05) while preventing Out-Of-Memory (OOM) crashes.
-- **Fail-Safe:** Added a `psutil` memory guard in the Python scripts that monitors system RAM and fails gracefully if usage exceeds 90%, preventing catastrophic OS-level freezing or infinite page-file thrashing.
+
+- **Procedural generation memory:** Complex procedural trees (e.g. Mangrove via Geometry Nodes) can OOM during mesh realization in Blender's Python API.
+- **Decimate strategy:** `decimate_ratio` of `0.2`–`0.3` works well on 32 GB RAM — enough detail for TLS simulation without crashing.
+- **Fail-safe:** `forest_assembler.py` uses a `psutil` memory guard that aborts gracefully above ~90% RAM usage.
 
 ## 2. Spatial Orientation & Coordinate Frames
-- **Blender Import Rotation:** Exporting assembled scenes as `.obj` caused Blender to automatically rotate the entire forest 90 degrees sideways (Y-up vs Z-up conversion issue). 
-- **Solution:** Switched the final forest mesh export format in `forest_assembler.py` from `.obj` to `.ply`. `.ply` naturally retains its absolute coordinates without auto-rotation on import.
+
+- **Blender scene export:** Assembling scenes as `.obj` caused Blender to rotate the forest 90° (Y-up vs Z-up). Scene export in `forest_assembler.py` uses `.ply` to preserve absolute coordinates.
+- **Arbaro export:** Arbaro OBJ output is Y-up. `ArbaroGenerator` applies a +90° X rotation via `trimesh` before downstream use so all assets are Z-up consistent with the rest of the pipeline.
 
 ## 3. Forest Assembly Physics
-- **Grounding Trees:** Simply placing a tree at `Z = 0.0` causes it to float or sink depending on where Blender set its internal origin point. 
-  - *Fix:* Always mathematically compute the lowest vertex of the bounding box (`tree_mesh.bounds[0][2]`) and translate the mesh by `-min_z` so the absolute bottom root always perfectly touches the ground plane.
-- **Randomization:** 
-  - To prevent identical tree cloning, a 3D scaling matrix (`trimesh.transformations.scale_matrix`) scales trees dynamically between 0.7x and 1.5x.
-  - *Gotcha:* When scaling the mesh, the Ground Truth (GT) skeleton must also be scaled! The `radius` and `length` of the skeleton cylinders are manually multiplied by the scale factor, and the directional `axis` vector is explicitly re-normalized after applying the transformation matrix.
-- **Wind Tilted Forests:** Be careful with the `wind_x` and `wind_y` parameters. Applying a universal wind vector calculates a rotation matrix that tilts the entire forest sideways. Keep default wind at `0.0` for perfectly vertical growth.
+
+- **Grounding trees:** Placing at `Z = 0` floats or sinks trees depending on mesh origin. Always translate by `-min_z` from the bounding box so roots touch the ground plane.
+- **Randomization:**
+  - Scale trees between 0.7× and 1.5× with `trimesh.transformations.scale_matrix`.
+  - **Gotcha:** GT skeleton cylinders must be scaled too — multiply `radius` and `length`, re-normalize the `axis` vector after the transform matrix.
+- **Wind tilt:** `wind_x` / `wind_y` in assembly apply a rotation that tilts the whole forest. Keep defaults at `0.0` for vertical trees unless wind is intentional.
 
 ## 4. LiDAR Simulation Physics (Open3D)
-- **Crop Circle Artifacts:** Standard Open3D mathematical spherical rays (`theta`, `phi`) are too perfect. Hitting a perfectly flat ground plane results in unnatural, concentric "crop circle" scanning artifacts.
-  - *Fix:* Injected tiny random Gaussian jitter (`np.random.uniform`) into the angular grid generation to organically break the concentric rings and simulate real-world LiDAR motor jitter.
-- **Physical LiDAR Intensity:**
-  - Standard simulated scans only output XYZ. Real LiDAR captures intensity based on surface reflectance.
-  - *Lambertian Reflectance Model:* Implemented an intensity proxy using the absolute dot product of the outgoing ray direction and the mesh primitive normal (`abs(dot(ray, normal))`). 
-  - *Result:* Flat, thick wood trunks that take "direct hits" reflect bright light (High Intensity). Chaotic, thin canopy leaves that take "glancing hits" reflect scattered light (Low Intensity).
-  - *Distance Decay:* Added an inverse-square law (`1/R^2`) distance decay to further approximate realistic signal loss.
-- **Data Export (.laz):** Instead of using a `.ply` RGB color hack or stripping data with `.xyz`, the simulator now uses `laspy` to natively export a compressed `.laz` (LASer) file. The 0-1 intensity is scaled back up to a 16-bit integer (0-65535) and natively embedded into the `las.intensity` dimension, matching true professional LiDAR datasets.
-- **Scan Distribution:** A realistic survey requires overlapping viewpoints to prevent occlusion. Instead of clustering scanners near the origin `[0,0]`, `simulator_open3d.py` dynamically computes random `[X, Y, 1.5]` tripod coordinates scattered uniformly across the entire bounding box area.
 
-## 5. Large-Scale Dataset Generation Strategy
-- **Asset Pooling Optimization:** When generating thousands of tiles (e.g. 125 tiles per vegetation type), running the external procedural generator (like Java Arbaro) for every single tree in every tile is extremely slow (O(Tiles * Trees) subprocess calls).
-- **Solution:** Generate a large pool of tree variants upfront (e.g., 50 variations of a given species) just once per vegetation type. The `ForestAssembler` can then construct endless unique scene combinations by randomly sampling from this pre-generated pool, applying random coordinate placements, random Z-axis yaw rotations, and random scale factors.
+- **Crop circle artifacts:** Perfect spherical ray grids on flat ground produce concentric ring artifacts. Gaussian jitter on `theta` and `phi` in `_create_spherical_rays` breaks the symmetry.
+- **Intensity model:**
+  - Lambertian proxy: `abs(dot(ray_direction, surface_normal))`
+  - Distance decay: inverse-square `1/R²`
+  - Stored as 16-bit `las.intensity` (0–65535) in `.laz` exports via `laspy`
+- **Wind sway during scan:** Per-scan-position wind is perturbed by `wind_sway_std`; displacement scales with `(z / max_height)²` so bases stay fixed.
+- **Scan placement:** Scanner positions are random `[X, Y, 1.5]` spread across the scene bounding box, not clustered at the origin.
 
-## 6. Benchmarking & Downscaling
-- **Memory Footprint:** Running benchmarks on massive point clouds (e.g. 0.05-degree rays and 0.01m voxels generating 100MB+ per tile) easily causes 32GB RAM machines to OOM during KDTree construction and scanline processing.
-- **Downscale Strategy:** For development and regular benchmarking, `resolution_theta_deg` and `resolution_phi_deg` are increased to `0.2`, and `voxel_downsample_size` is increased to `0.05` (5cm). This shrinks the point clouds by over ~16x and allows fast processing (seconds per tile instead of minutes/hours) while maintaining structural tree integrity for algorithms.
-- **Batching:** `generate_test_dataset.py` restricts tree pools and tile batches to ~10-20 to ensure generation takes minutes rather than days.
+## 5. Ground Truth Pipeline
+
+- **Per-tree GT:** Both generators produce a leafless `_noleaf.obj`. `mesh_to_gt_cylinders.py` fits cylinders to branch geometry and writes per-tree JSON.
+- **Scene GT:** `ForestAssembler` merges transformed per-tree cylinders into `{scene}_gt.json`. `GTParser` flattens to `{scene}_gt.txt` (9 columns per cylinder).
+- **Trunk mesh:** `{scene}_gt_mesh.ply` (leafless geometry only) is copied as `{species}_tile_{id}_trunk.ply` for labeling.
+- **Point labels:** `label_gt_points.py` uses Open3D `RaycastingScene.compute_distance` against the trunk mesh. Points within `dist_thresh` (default 5 cm) are wood (1), else leaf (0).
+
+## 6. Large-Scale Dataset Generation Strategy
+
+- **Asset pooling:** Running Arbaro/Blender per tree per tile is O(tiles × trees). Instead, generate a pool (e.g. 5–50 variants) once per species, then sample from it for each tile.
+- **`generate_test_dataset.py` flow:**
+  1. For each `lib/arbaro/trees/*.xml` species
+  2. Build pool in `output/temp_assets/`
+  3. For each tile: assemble 1 tree → simulate 2–3 scans → export GT → copy to `testdataset/single/`
+  4. Write `{species}_tile_{id}_meta.json` with scan positions and noise params
+- **Downscale defaults** (in script): `resolution_theta/phi_deg = 0.2`, `voxel_downsample_size = 0.05`, `pool_size = 5`, `tiles_per_batch = 3`. Tweak upward only when RAM allows.
+
+## 7. Benchmarking & Separation Evaluation
+
+- **Preprocessing parity:** `benchmark_separation.py` uses `EcomodelLite` (normalize → CSF ground removal → intensity filter) to match `pipeline_lite.py`.
+- **Single-tree leafy tiles:** `SegmenterScanline` is designed for wood-heavy skeletons and drops or mis-segments leafy canopies. For benchmark tiles with one tree, instance IDs are set to all-zero (single instance) after preprocessing instead of running scanline segmentation.
+- **Algorithms evaluated:** `SegmentRGI`, `GBSeparation`, `SmartQSM` (optional; needs `thirdparty/SmartQSM` config paths).
+- **GT partitioning:** Cylinders with `radius >= trunk_radius_threshold` (default 5 cm) define trunk; smaller radii define canopy. Surface points are sampled from cylinders for KD-tree distance queries.
+- **Metrics:** Voxel-level precision, recall, F1, and IoU at `--voxel_size` (default 10 cm), computed separately for trunk and canopy regions.
+- **Caching:** `{tile}_instances.npz` caches preprocessed points so algorithm re-runs skip EcomodelLite.
+- **Outputs:** Append-safe CSV at `--out_csv`, per-tile logs in `output/logs/`, optional `--visualize` PLY layers and `--plot` summary bar chart. `plot_species_performance.py` groups trunk F1 by species from a results CSV.
+
+## 8. Generator-Specific Notes
+
+### Blender
+
+- Runs headless: `blender -b [blend_file] -P blender_script.py -- --seed ... --height ...`
+- Mangrove parameters controlled via `configs/mangrove_config.json` (copy from `.example.json`)
+- `inspect_gn.py` at repo root of SyntheticPipeline lists Geometry Nodes socket identifiers when debugging parameter names
+
+### Arbaro
+
+- Requires Java and `lib/arbaro/arbaro_cmd.jar` (install via `scripts/setup_arbaro.py`)
+- Two subprocess calls per tree: leaves on (visual) + leaves off (GT skeleton)
+- `Scale` XML param is overwritten per tree to match sampled height from `AssetManager`
+- Species XML files live in `lib/arbaro/trees/` and are gitignored along with the JAR
+
+## 9. Operational Gotchas
+
+| Issue | Mitigation |
+|-------|------------|
+| OOM during assembly or benchmark KD-tree | Lower ray resolution, increase voxel downsample, reduce `pool_size` / `tiles_per_batch` |
+| Empty asset dir in assembler | Generators must output paired `.obj` + `.json`; assembler skips `*_noleaf.obj` when listing assets |
+| SmartQSM benchmark failures | Verify `--sq_dir`, `--sq_py`, `--sq_cfg`; check `output/logs/{tile}.log` |
+| Missing `lib/arbaro` | Run `python scripts/setup_arbaro.py` and add species XMLs to `lib/arbaro/trees/` |
+| Config not found | Copy `configs/*.example.*` to non-example names; machine-specific paths are gitignored |
+
+## 10. File Layout Quick Reference
+
+```
+SyntheticPipeline/
+├── run_simulation.py          # Demo: config-driven full pipeline
+├── scripts/
+│   ├── generate_test_dataset.py
+│   ├── label_gt_points.py
+│   ├── benchmark_separation.py
+│   └── plot_species_performance.py
+├── pipeline/                  # asset_manager, forest_assembler, simulator, gt_parser
+├── generators/                # blender, arbaro, mesh_to_gt_cylinders
+├── evaluation/                # QSM evaluator, visualizers, GN inspectors
+├── configs/                   # *.example.json / *.example.xml templates
+├── lib/arbaro/                # JAR + trees/*.xml (gitignored, local setup)
+├── output/                    # Generated artifacts (gitignored)
+└── testdataset/single/        # Benchmark tiles (gitignored)
+```
