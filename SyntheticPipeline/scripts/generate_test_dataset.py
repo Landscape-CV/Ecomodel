@@ -26,7 +26,7 @@ def main():
     pc_dir = os.path.join(base_dir, "output", "temp_pointclouds")
     
     # Final dataset directory
-    dataset_dir = os.path.join(base_dir, "testdataset")
+    dataset_dir = os.path.join(base_dir, "testdataset", "single")
     os.makedirs(dataset_dir, exist_ok=True)
     
     # Noise parameters
@@ -86,7 +86,7 @@ def main():
                     shutil.rmtree(pc_dir)
                 os.makedirs(pc_dir, exist_ok=True)
                 
-                num_trees = random.randint(2, 5)
+                num_trees = 1
                 num_scans = random.randint(2, 3)
                 scene_name = f"{veg_name}_scene"
                 

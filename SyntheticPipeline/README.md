@@ -1,165 +1,244 @@
 # Synthetic LiDAR Pipeline
 
-This submodule manages the generation, assembly, and LiDAR simulation of synthetic forest environments. It's designed to abstract the 3D generation process, allow for custom environments, and output highly accurate TLS (Terrestrial Laser Scanning) point clouds and corresponding structural ground truth (GT) cylinders.
+This submodule generates synthetic forest scenes, simulates Terrestrial Laser Scanner (TLS) point clouds, and exports structural ground truth (GT) cylinder skeletons. It is used both for interactive demo runs and for building benchmark datasets that evaluate wood/leaf separation algorithms in the parent PyTLidar project.
+
+## Pipeline Overview
+
+```
+Tree Generator (Blender or Arbaro)
+        ↓
+AssetManager  →  pool of .obj meshes + per-tree GT JSON
+        ↓
+ForestAssembler  →  scene .ply + scene GT JSON (+ trunk mesh)
+        ↓
+Open3DSimulator  →  merged .laz scan with intensity
+        ↓
+GTParser  →  scene-level GT cylinders (.txt)
+```
+
+Optional downstream steps (benchmark workflow):
+
+```
+label_gt_points.py  →  per-point wood/leaf labels (.npy)
+benchmark_separation.py  →  metrics CSV + visualizations
+plot_species_performance.py  →  per-species comparison charts
+```
 
 ## Features
 
-- **Generator Agnostic:** Supports generating 3D models from any system (currently implements Blender Geometry Nodes/L-Systems).
-- **Automated Scene Assembly:** Seamlessly places individual trees into a simulated forest area, accounting for random rotations, scales, wind tilt, and proper ground projection.
-- **LiDAR Simulation:** Utilizes `Open3D` raycasting to simulate a Terrestrial Laser Scanner (TLS). Supports adding spatial jitter (beam divergence proxy), distance noise, and wind sway.
-- **Ground Truth Export:** Traces full analytical tree skeleton parameters back into the scene to output high-fidelity structural data.
+- **Generator agnostic:** `BlenderGenerator` (Geometry Nodes / Mangrove preset) and `ArbaroGenerator` (Java Weber–Penn procedural trees) share a common `BaseTreeGenerator` interface.
+- **Asset pooling:** Generate a tree variant pool once, then assemble many unique scenes by sampling, rotating, scaling, and placing trees.
+- **Forest assembly:** Grounds trees on `Z = 0`, applies random scale (0.7–1.5×) and yaw, optionally tilts for wind, and propagates GT skeleton transforms.
+- **LiDAR simulation:** Open3D raycasting with angular jitter, Lambertian intensity, distance decay, distance noise, beam-divergence proxy, wind sway, and voxel downsampling.
+- **Ground truth:** Per-tree cylinder skeletons (from leafless meshes) are merged into scene-level JSON/TXT; trunk-only meshes support point labeling.
+- **Benchmarking:** Evaluates `SegmentRGI`, `GBSeparation`, and `SmartQSM` against synthetic GT using the same `EcomodelLite` preprocessing as production.
 
 ## Directory Structure
 
-- `configs/`: Contains machine-specific `pipeline_config.json` and tree generation settings (like `mangrove_config.json`). Use the provided `.example.json` files to set up your environment.
-- `pipeline/`: The core orchestration engines:
-  - `asset_manager.py`: Manages bulk generation of trees.
-  - `forest_assembler.py`: Assembles individual trees into the forest scene.
-  - `simulator_open3d.py`: The TLS LiDAR Raycaster.
-  - `gt_parser.py`: Formats the parsed GT into evaluating formats.
-- `generators/`: Implementations of tree algorithms (e.g., Blender).
-- `evaluation/`: Scripts to visualize, inspect, and evaluate generated meshes and point clouds against ground truth.
-- `tests/`: A `pytest` suite for automated CI/CD checks.
-- `output/`: (Generated) The destination for all intermediate assets, scenes, and laz point clouds.
+| Path | Purpose |
+|------|---------|
+| `run_simulation.py` | End-to-end demo orchestrator (assets → scene → scan → GT) |
+| `configs/` | Example configs; copy `.example` files to machine-local JSON/XML |
+| `pipeline/` | Core engines |
+| `generators/` | Blender and Arbaro tree generators + `mesh_to_gt_cylinders.py` |
+| `scripts/` | Dataset generation, labeling, benchmarking, and plotting |
+| `evaluation/` | Visualization, QSM evaluation, and Blender GN inspection utilities |
+| `tests/` | `pytest` suite for assembler and generator interfaces |
+| `lib/` | Downloaded Arbaro JAR and species XML templates (gitignored) |
+| `output/` | Generated assets, scenes, point clouds, benchmark results (gitignored) |
+| `testdataset/` | Generated benchmark tiles (gitignored) |
+| `inspect_gn.py` | Small Blender helper to list Geometry Nodes inputs on the Mangrove tree |
 
-## Mangrove Configuration (`mangrove_config.json`)
+### `pipeline/`
 
-When using the `BlenderGenerator` with the Mangrove preset, you can fine-tune the tree generation properties via `configs/mangrove_config.json`. This file prevents randomizing structural values inappropriately and allows precise control over the generated assets.
+- `asset_manager.py` — Parallel tree generation via any `BaseTreeGenerator`
+- `forest_assembler.py` — Scene mesh (`.ply`) + global GT JSON + trunk mesh (`.ply`)
+- `simulator_open3d.py` — TLS raycaster; exports `.laz` with 16-bit intensity
+- `simulator_base.py` — Shared simulator interface
+- `gt_parser.py` — Converts scene GT JSON to cylinder `.txt` for evaluation
 
-Key parameters include:
-- `"decimate_ratio"`: (Float, e.g., 0.3) Reduces the final polygon count of the generated tree mesh by this ratio, heavily optimizing downstream assembly and simulation.
-- `"remove_underground"`: (Boolean) If true, a script cleans up any mesh vertices that fall below the ground plane (`Z < 0`), ensuring flush placement on terrain.
-- `"randomize_seed_parameters"`: (Boolean) If true, enables varying specific Geometry Nodes parameters per-tree to create realistic forest diversity.
-- `"seed_parameters"`: (List) Specifies which Geometry Nodes inputs (e.g., `"Input_20"`) receive the random seed offset.
-- `"parameters"`: (Object) A direct mapping of Blender Geometry Nodes modifier inputs. Here is the complete reference of what each parameter controls for the Mangrove tree:
-  - `Input_2`: Base level
-  - `Input_3`: Root Spread
-  - `Input_4`: Root lift
-  - `Input_5`: Root Angle
-  - `Input_6`: Stem tip radius
-  - `Input_7`: Stem base radius
-  - `Input_8`: Stem height
-  - `Input_9`: Root Base radius
-  - `Input_10`: Root Tip Radius
-  - `Input_11`: Base Radius
-  - `Input_12`: Root depth
-  - `Input_14`: Root Secondary Radius
-  - `Input_15`: Resolution Multiplier
-  - `Input_16`: root amount
-  - `Input_17`: Root trim Elevation
-  - `Input_18`: Root Rise
-  - `Input_19`: Root spin
-  - `Input_20`: Seed
-  - `Input_21`: Branching start
-  - `Input_22`: Branching spin
-  - `Input_23`: Branching bend
-  - `Input_24`: Branching vertical spread
-  - `Input_25`: Enable Proxy (Usually overridden internally to False)
+### `scripts/`
 
-## Arbaro Configuration (`arbaro_template.xml`)
+- `setup_arbaro.py` — Downloads and extracts Arbaro 1.9.8 into `lib/arbaro/`
+- `generate_test_dataset.py` — Builds per-species single-tree benchmark tiles
+- `label_gt_points.py` — Labels scan points as wood (1) or leaf (0) from trunk mesh distance
+- `benchmark_separation.py` — Runs separation algorithms and writes metrics CSV
+- `plot_species_performance.py` — Bar charts of trunk metrics grouped by species
 
-Arbaro is a Java-based procedural tree generator that uses an XML parameter system to define species and growth rules based on the Weber/Penn algorithm. You can switch to Arbaro by updating your `pipeline_config.json`:
-```json
-"generator": {
-    "type": "arbaro",
-    "arbaro_jar_path": "SyntheticPipeline/lib/arbaro/arbaro_cmd.jar",
-    "xml_template": "SyntheticPipeline/configs/arbaro.xml",
-    "java_path": "java",
-    "workers": 2
-}
+### `evaluation/`
+
+- `evaluator.py` — `QSMEvaluator` for matching predicted vs GT cylinder instances
+- `visualize_pipeline.py` — Overlay LAZ points with GT cylinder meshes
+- `render_single_tree.py`, `render_verification.py` — Render checks for generated assets
+- `inspect_gn*.py` — Blender Geometry Nodes debugging helpers
+
+## Setup
+
+### 1. Python dependencies
+
+From the parent PyTLidar environment:
+
+- `open3d`, `trimesh`, `laspy[lazrs]`, `psutil`, `pytest`
+- Benchmarking also needs `pandas`, `scipy`, `matplotlib`, `seaborn`
+
+### 2. Pipeline config
+
+```bash
+cp configs/pipeline_config.example.json configs/pipeline_config.json
 ```
 
-The pipeline automatically handles injecting the random seed, dynamically adjusting the `Scale` parameter to match the height distribution in your config, and running Arbaro twice (once to generate the visual leaf-on mesh, and once with `Leaves` set to 0 to generate a leafless skeleton for GT cylinder extraction).
+Edit paths such as `blender_path` and `blend_file`. For Mangrove trees, also copy:
 
-### Comprehensive Arbaro Options
-Inside your XML template (e.g., `configs/arbaro.example.xml` or `configs/arbaro.xml`), you have full control over the structural parameters. Key parameters to experiment with include:
+```bash
+cp configs/mangrove_config.example.json configs/mangrove_config.json
+```
 
-**General Tree Geometry:**
-- `Scale`: The global scale multiplier (the pipeline actively manipulates this per-tree).
-- `ScaleV`: Variance of the scale (randomness).
-- `BaseSize`: Fractional height of the main trunk before the first branches appear.
-- `Ratio`: How quickly branch thickness decreases.
-- `RatioPower`: The tapering curve of branches.
-- `Flare`: The expansion at the very base of the root.
+### 3. Arbaro (for dataset generation)
 
-**Leaves:**
-- `Leaves`: The number of leaves generated on the highest level branches.
-- `LeafShape`: Index of leaf shape (0=ovate, 1=triangle, etc. depending on Arbaro).
-- `LeafScale` / `LeafScaleX`: Physical dimensions of individual leaves.
-- `LeafBend`: How much leaves droop under gravity.
+Arbaro is not committed to git. Install it once:
 
-**Branch Levels (0 = Trunk, 1 = Main branches, 2 = Twigs, etc.):**
-*Each level has its own configuration prefix, e.g., `0DownAngle`, `1DownAngle`.*
-- `[level]Branches`: How many branches spawn from the parent level.
-- `[level]DownAngle` / `[level]DownAngleV`: The angle relative to the parent branch.
-- `[level]Rotate` / `[level]RotateV`: The helical rotation around the parent branch.
-- `[level]Length` / `[level]LengthV`: Branch length relative to the parent.
-- `[level]Curve` / `[level]CurveV` / `[level]CurveBack`: Gravity and phototropism bending forces.
+```bash
+python scripts/setup_arbaro.py
+```
 
-For full mathematical definitions of these properties, refer to Jason Weber & Joseph Penn: "Creation and Rendering of Realistic Trees".
+Place species XML templates in `lib/arbaro/trees/*.xml`. `generate_test_dataset.py` iterates over every XML in that folder.
 
-## Quickstart
+For `run_simulation.py` with Arbaro, copy and customize:
 
-1. **Setup configs:** Copy `configs/pipeline_config.example.json` to `configs/pipeline_config.json`. Update paths like `"blender_path"` to match your local installation.
-2. **Run the simulation:** Run the main orchestrator script:
-   ```bash
-   python run_simulation.py
-   ```
-   *Note: If no arguments are passed, it defaults to `configs/pipeline_config.json`.*
+```bash
+cp configs/arbaro.example.xml configs/arbaro.xml
+```
 
-3. **Advanced Runs:** You can run specific configurations by pointing to them:
-   ```bash
-   python run_simulation.py --config configs/my_custom_config.json
-   ```
+Then set `"generator": { "type": "arbaro", ... }` in `pipeline_config.json`.
 
-## Quickstart: Generating & Benchmarking a Dataset
+## Quickstart: Demo Run
 
-If you are new to the project and want to quickly generate synthetic point clouds and benchmark the segmentation models against them, follow these 3 steps:
+Runs the full pipeline with settings from `configs/pipeline_config.json`:
 
-**1. Generate the Dataset**
-This script reads tree types from `lib/arbaro/trees`, builds random forests, and simulates LiDAR scans, saving them to `testdataset/`.
+```bash
+python run_simulation.py
+python run_simulation.py --config configs/my_custom_config.json
+```
+
+Outputs land under `output/assets`, `output/scenes`, and `output/pointclouds` by default.
+
+## Quickstart: Benchmark Dataset
+
+### 1. Generate tiles
+
+Reads every `lib/arbaro/trees/*.xml`, builds a small tree pool per species, assembles single-tree scenes, simulates 2–3 TLS scans, and writes to `testdataset/single/`:
+
 ```bash
 python scripts/generate_test_dataset.py
 ```
-*(Note: To prevent out-of-memory errors and keep generation fast, the default parameters in this script are downscaled for lower ray density and fewer trees per tile).*
 
-**2. Label the Point Clouds (Ground Truth)**
-The segmentation models need to know which points are wood and which are leaves. This script computes distances to the GT trunk meshes to create binary labels (`*_labels.npy`).
+Default generation uses downscaled scan settings to keep memory and runtime manageable:
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `pool_size` | 5 | Tree variants per species |
+| `tiles_per_batch` | 3 | Scenes per species |
+| `area_size` | 8 m | Plot extent |
+| `resolution_theta/phi_deg` | 0.2° | ~16× fewer rays than production 0.05° |
+| `voxel_downsample_size` | 0.05 m | 5 cm voxels |
+
+### 2. Label point clouds
+
+Maps each LAZ point to wood or leaf by distance to the trunk GT mesh (`*_trunk.ply`):
+
 ```bash
-python scripts/label_gt_points.py
+python scripts/label_gt_points.py --dataset_dir testdataset/single
 ```
 
-**3. Run the Benchmark**
-Now evaluate the `SegmentRGI` model against your newly generated dataset.
+### 3. Run the benchmark
+
+Applies `EcomodelLite` ground removal and intensity filtering, then scores trunk/canopy voxel metrics:
+
 ```bash
-python scripts/benchmark_separation.py --dataset_dir testdataset/ --out_csv output/benchmark_results.csv --num_workers 3
+python scripts/benchmark_separation.py \
+  --dataset_dir testdataset/single \
+  --out_csv output/benchmark_results_single.csv \
+  --num_workers 3
 ```
 
-## Benchmarking Arguments
+### 4. Plot species breakdown (optional)
 
-The pipeline includes a script (`scripts/benchmark_separation.py`) to evaluate tree segmentation models (e.g., `SegmentRGI`) against the synthetic ground truth datasets.
-
-To run the benchmark across your generated dataset:
 ```bash
-python scripts/benchmark_separation.py --dataset_dir testdataset/ --out_csv output/benchmark_results.csv
+python scripts/plot_species_performance.py
 ```
 
-**Key Arguments:**
-- `--num_workers <int>`: Leverages Python's `ProcessPoolExecutor` to run multiple tiles in parallel, speeding up evaluation significantly. Defaults to `cpu_count() - 1`.
-- `--sample_n <int>`: Randomly samples a subset of tiles (e.g., `--sample_n 5`) to run a quick test instead of benchmarking the entire dataset.
-- `--visualize`: Instead of popping up a UI window that blocks parallel workers, this flag generates colored side-by-side `.ply` point clouds showing the Ground Truth (left) vs Prediction (right). These are saved directly to `output/visualizations/` for easy review in software like CloudCompare.
+Or pass `--plot` to `benchmark_separation.py` for an algorithm-level summary chart.
 
-## Requirements
+## Dataset File Convention
 
-Ensure the parent environment dependencies are installed, particularly:
-- `open3d`
-- `trimesh`
-- `laspy[lazrs]`
-- `pytest`
+Each tile in `testdataset/single/` uses the prefix `{species}_tile_{id}`:
+
+| File | Description |
+|------|-------------|
+| `*_scan.laz` | Simulated TLS point cloud with intensity |
+| `*_trunk.ply` | Leafless trunk/branch mesh for labeling |
+| `*_gt.json` / `*_gt.txt` | Scene cylinder skeleton (9 columns per row) |
+| `*_meta.json` | Scan positions, noise params, tile metadata |
+| `*_labels.npy` | Binary wood/leaf labels (created by `label_gt_points.py`) |
+
+GT cylinder format: `[start_x, start_y, start_z, radius, axis_x, axis_y, axis_z, length, tree_instance_id]`.
+
+## Generator Configuration
+
+### Blender / Mangrove (`mangrove_config.json`)
+
+Key parameters when using `BlenderGenerator`:
+
+- `"decimate_ratio"` (e.g. `0.3`) — Polygon reduction; `0.2–0.3` is a practical range on 32 GB RAM
+- `"remove_underground"` — Strips vertices below `Z = 0`
+- `"randomize_seed_parameters"` / `"seed_parameters"` — Per-tree Geometry Nodes variation
+- `"parameters"` — Direct mapping of Blender Geometry Nodes inputs (`Input_2` … `Input_25`)
+
+See `configs/mangrove_config.example.json` for the full Mangrove input reference.
+
+### Arbaro (`arbaro.xml` or per-species XML in `lib/arbaro/trees/`)
+
+```json
+"generator": {
+  "type": "arbaro",
+  "arbaro_jar_path": "SyntheticPipeline/lib/arbaro/arbaro_cmd.jar",
+  "xml_template": "SyntheticPipeline/configs/arbaro.xml",
+  "java_path": "java",
+  "workers": 2
+}
+```
+
+The pipeline injects a random seed, sets `Scale` from the target height, and runs Arbaro twice per tree: once with leaves (visual mesh) and once with `Leaves = 0` (skeleton mesh for GT extraction). Meshes are rotated from Arbaro's Y-up output to Z-up.
+
+Notable Arbaro XML parameters: `Scale`, `ScaleV`, `BaseSize`, `Ratio`, `RatioPower`, `Flare`, `Leaves`, and per-level branch settings (`0Branches`, `0DownAngle`, `1Length`, etc.). See `configs/arbaro.example.xml` and the Weber & Penn tree paper for full definitions.
+
+## Benchmarking Reference
+
+`benchmark_separation.py` evaluates wood/leaf separation against GT skeletons sampled from cylinder surfaces. Metrics are computed in voxel space separately for **trunk** (radius ≥ threshold) and **canopy** regions.
+
+**Key arguments:**
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--algorithms` | all three | `SegmentRGI`, `GBSeparation`, `SmartQSM` |
+| `--trunk_radius_threshold` | `0.05` | Cylinder radius (m) separating trunk from canopy |
+| `--voxel_size` | `0.1` | Voxel size (m) for precision/recall/F1/IoU |
+| `--num_workers` | `cpu_count - 1` | Parallel tile processing |
+| `--sample_n` | all tiles | Random subset for quick runs |
+| `--visualize` | off | Export colored GT vs prediction `.ply` layers |
+| `--plot` | off | Write `output/visualizations/benchmark_comparison.png` |
+| `--sq_dir`, `--sq_py`, `--sq_cfg` | SmartQSM paths | Required for SmartQSM evaluation |
+
+Preprocessing mirrors `pipeline_lite.py`: normalize → CSF ground removal → intensity filter. For single-tree leafy tiles, instance segmentation is bypassed (all points assigned to one tree) because `SegmenterScanline` is tuned for wood-only skeletons.
+
+Per-tile logs are written to `output/logs/`. Instance caches (`*_instances.npz`) speed up re-runs.
 
 ## Testing
 
-Run tests by executing:
 ```bash
 pytest tests/
 ```
+
+## See Also
+
+- `agent.md` — Design decisions, physics details, and operational gotchas gathered during development
