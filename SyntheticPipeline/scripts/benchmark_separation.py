@@ -8,6 +8,7 @@ import concurrent.futures
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from scipy.spatial import cKDTree
 
 try:
     import laspy
@@ -28,16 +29,61 @@ from GBSeparation.ExtractInitWood import extract_init_wood
 from GBSeparation.ExtractFinalWood import extract_final_wood
 from gui.smartqsm_runner import run_smartqsm_on_segments
 
-def compute_metrics(gt_labels, pred_labels):
-    tp = np.sum((gt_labels == 1) & (pred_labels == 1))
-    fp = np.sum((gt_labels == 0) & (pred_labels == 1))
-    fn = np.sum((gt_labels == 1) & (pred_labels == 0))
-    tn = np.sum((gt_labels == 0) & (pred_labels == 0))
+def sample_cylinders(cylinders, num_points=100000):
+    if len(cylinders) == 0:
+        return np.zeros((0, 3))
+    areas = 2 * np.pi * cylinders[:, 3] * cylinders[:, 7]
+    areas[areas <= 0] = 1e-6
+    probs = areas / np.sum(areas)
+    counts = np.random.multinomial(num_points, probs)
+    points = []
+    for i, cyl in enumerate(cylinders):
+        n = counts[i]
+        if n == 0: continue
+        start = cyl[0:3]
+        radius = cyl[3]
+        axis = cyl[4:7]
+        length = cyl[7]
+        
+        z = np.random.uniform(0, length, n)
+        theta = np.random.uniform(0, 2*np.pi, n)
+        
+        if np.abs(axis[0]) > 0.9:
+            v1 = np.array([0, 1, 0])
+        else:
+            v1 = np.array([1, 0, 0])
+        v1 = v1 - np.dot(v1, axis) * axis
+        v1 = v1 / np.linalg.norm(v1)
+        v2 = np.cross(axis, v1)
+        
+        pts = start + np.outer(z, axis) + radius * (np.outer(np.cos(theta), v1) + np.outer(np.sin(theta), v2))
+        points.append(pts)
+    return np.vstack(points)
+
+def compute_voxel_metrics(pred_mask, gt_mask, points, voxel_size):
+    if len(points) == 0:
+        return 0.0, 0.0, 0.0, 0.0
+        
+    voxel_indices = np.floor(points[:, :3] / voxel_size).astype(int)
+    
+    unique_voxels, inv_idx = np.unique(voxel_indices, axis=0, return_inverse=True)
+    counts = np.bincount(inv_idx, minlength=len(unique_voxels))
+    
+    pred_counts = np.bincount(inv_idx, weights=pred_mask, minlength=len(unique_voxels))
+    gt_counts = np.bincount(inv_idx, weights=gt_mask, minlength=len(unique_voxels))
+    
+    pred_is_voxel = (pred_counts / counts) > 0.5
+    gt_is_voxel = (gt_counts / counts) > 0.5
+    
+    tp = np.sum(pred_is_voxel & gt_is_voxel)
+    fp = np.sum(pred_is_voxel & ~gt_is_voxel)
+    fn = np.sum(~pred_is_voxel & gt_is_voxel)
     
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
     iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
+    
     return precision, recall, f1, iou
 
 
@@ -222,12 +268,57 @@ def process_tile(labels_file, log_dir, args):
             points = np.vstack([las.x, las.y, las.z, intensity]).T
             gt_labels = np.load(labels_file)
             
-            print("  [Step 1] Running Tree Instance Segmentation (Scanline)...")
-            segmenter = SegmenterScanline()
-            filtered_points, instance_ids, orig_indices = segmenter.process_with_indices(points)
+            cache_file = os.path.join(log_dir, f"{tile_name}_instances.npz")
+            if os.path.exists(cache_file):
+                print("  [Step 1] Loading Tree Instances from cache...", flush=True)
+                npz = np.load(cache_file)
+                filtered_points = npz['filtered_points']
+                instance_ids = npz['instance_ids']
+                orig_indices = npz['orig_indices']
+            else:
+                print("  [Step 1] Running EcomodelLite Preprocessing & Segmentation...", flush=True)
+                project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                if project_root not in sys.path:
+                    sys.path.insert(0, project_root)
+                from ecomodel_lite import EcomodelLite
+                from ecomodel_segmenters import SegmenterScanline
+                
+                model = EcomodelLite(segmenter_type="scanline")
+                
+                # Stack coordinates, intensity, and original index
+                pts_with_idx = np.vstack([las.x, las.y, las.z, intensity, np.arange(len(points))]).T
+                
+                # 1. Normalize
+                pts_with_idx = model.normalize_point_cloud(pts_with_idx)
+                
+                # 2. Remove ground
+                pts_with_idx = model.remove_ground(pts_with_idx)
+                
+                # 3. Filter intensity
+                if pts_with_idx is not None:
+                    pts_with_idx = model.filter_intensity(pts_with_idx, model.intensity_threshold)
+                
+                if pts_with_idx is None or len(pts_with_idx) < 100:
+                    filtered_points = None
+                    instance_ids = np.array([])
+                    orig_indices = np.array([])
+                else:
+                    # For benchmarking separation on single-tree tiles, bypass SegmenterScanline 
+                    # because it is designed for wood-only skeletons and fails/drops points on leafy canopies.
+                    filtered_points = pts_with_idx[:, :4]  # Keep xyz + intensity
+                    instance_ids = np.zeros(len(filtered_points), dtype=np.int32)
+                    orig_indices = pts_with_idx[:, 4].astype(int)
+                np.savez_compressed(cache_file, filtered_points=filtered_points, instance_ids=instance_ids, orig_indices=orig_indices)
             
             if filtered_points is None or len(instance_ids) == 0:
                 print("  [Warning] No trees found.")
+                return []
+                
+            print("  [Step 1b] Preparing GT Skeletons...", flush=True)
+            # Use the pre-computed _labels.npy (where 1 = Trunk, 0 = Canopy)
+            # This perfectly matches the _trunk.ply meshes in the test dataset
+            if len(gt_labels) != len(points):
+                print(f"  [Warning] Mismatch in GT labels length ({len(gt_labels)}) vs points ({len(points)}). Skipping.", flush=True)
                 return []
             
             algs_to_run = args.algorithms.split(",") if args.algorithms else list(ALGORITHMS.keys())
@@ -253,21 +344,61 @@ def process_tile(labels_file, log_dir, args):
                     print(f"  [Warning] No points valid for metric computation for {alg_name}.")
                     results.append({"tile": tile_name, "algorithm": alg_name, "error": "No valid points", "duration_sec": time.time() - alg_start})
                     continue
-                
-                valid_gt = gt_labels[valid_mask]
-                valid_pred = pred_labels[valid_mask]
-                
-                p, r, f1, iou = compute_metrics(valid_gt, valid_pred)
+                                # 3. Compute Metrics
                 duration = time.time() - alg_start
-                print(f"  -> {alg_name} | Precision: {p:.4f}, Recall: {r:.4f}, F1: {f1:.4f}, IoU: {iou:.4f}")
+                
+                # Default to 0
+                tp, tr, tf1, tiou = 0.0, 0.0, 0.0, 0.0
+                cp, cr, cf1, ciou = 0.0, 0.0, 0.0, 0.0
+                
+                if len(gt_labels) > 0:
+                    gt_is_trunk = (gt_labels == 1)
+                    gt_is_canopy = (gt_labels == 0)
+                    
+                    pred_is_wood = (pred_labels == 1)
+                    pred_is_canopy = (pred_labels == 0)
+                    
+                    # Compute Voxel Metrics for Trunk vs Canopy
+                    tp, tr, tf1, tiou = compute_voxel_metrics(pred_mask=pred_is_wood, gt_mask=gt_is_trunk, points=points, voxel_size=args.voxel_size)
+                    cp, cr, cf1, ciou = compute_voxel_metrics(pred_mask=pred_is_canopy, gt_mask=gt_is_canopy, points=points, voxel_size=args.voxel_size)
+                    
+                    print(f"  -> {alg_name} [Trunk Voxel]  | P: {tp:.4f}, R: {tr:.4f}, F1: {tf1:.4f}, IoU: {tiou:.4f}", flush=True)
+                    
+                    if getattr(args, "visualize", False):
+                        vis_dir = os.path.join(os.path.dirname(args.out_csv), "visualizations")
+                        os.makedirs(vis_dir, exist_ok=True)
+                        import open3d as o3d
+                        
+                        def save_ply(pts, color, name):
+                            if len(pts) == 0: return
+                            pcd = o3d.geometry.PointCloud()
+                            pcd.points = o3d.utility.Vector3dVector(pts)
+                            pcd.paint_uniform_color(color)
+                            o3d.io.write_point_cloud(os.path.join(vis_dir, name), pcd)
+                            
+                        # Colors: GT Trunk=Dark Green, GT Canopy=Light Green
+                        # Pred Trunk=Dark Red, Pred Canopy=Light Red/Pink
+                        save_ply(points[gt_is_trunk, :3], [0.0, 0.6, 0.0], f"{tile_name}_GT_Trunk.ply")
+                        save_ply(points[gt_is_canopy, :3], [0.4, 0.9, 0.4], f"{tile_name}_GT_Canopy.ply")
+                        save_ply(points[pred_is_wood, :3], [0.8, 0.0, 0.0], f"{tile_name}_{alg_name}_Pred_Trunk.ply")
+                        save_ply(points[pred_is_canopy, :3], [1.0, 0.5, 0.5], f"{tile_name}_{alg_name}_Pred_Canopy.ply")
+                        
+                        print(f"  -> Saved separate visualization layers to {vis_dir}", flush=True)
+                        
+                else:
+                    print("  [Warning] GT points missing, skipping metrics.")
                 
                 results.append({
                     "tile": tile_name,
                     "algorithm": alg_name,
-                    "precision": p,
-                    "recall": r,
-                    "f1_score": f1,
-                    "iou": iou,
+                    "trunk_precision": tp,
+                    "trunk_recall": tr,
+                    "trunk_f1_score": tf1,
+                    "trunk_iou": tiou,
+                    "canopy_precision": cp,
+                    "canopy_recall": cr,
+                    "canopy_f1_score": cf1,
+                    "canopy_iou": ciou,
                     "duration_sec": duration
                 })
                 
@@ -297,6 +428,9 @@ def main():
     parser.add_argument("--sq_dir", type=str, default=os.path.join(root_dir, "thirdparty", "SmartQSM"))
     parser.add_argument("--sq_py", type=str, default=sys.executable)
     parser.add_argument("--sq_cfg", type=str, default=os.path.join(root_dir, "thirdparty", "SmartQSM", "configs", "spconv-contraction-LEAFON-GPU.yaml"))
+    parser.add_argument("--trunk_radius_threshold", type=float, default=0.05, help="Radius threshold to distinguish trunk from canopy (meters)")
+    parser.add_argument("--voxel_size", type=float, default=0.1, help="Voxel size for computing metrics (meters)")
+    parser.add_argument("--visualize", action="store_true", help="Generate colored side-by-side .ply point clouds")
     parser.add_argument("--plot", action="store_true", help="Generate performance comparison graph")
     
     args = parser.parse_args()
@@ -313,25 +447,36 @@ def main():
     log_dir = os.path.join(os.path.dirname(args.out_csv), "logs")
     os.makedirs(log_dir, exist_ok=True)
     
+    df = pd.DataFrame()
+    if os.path.exists(args.out_csv):
+        try:
+            df = pd.read_csv(args.out_csv)
+            print(f"Loaded existing results from {args.out_csv}")
+        except Exception as e:
+            print(f"Could not load existing CSV: {e}")
+            
     print(f"Starting ProcessPoolExecutor with {args.num_workers} workers...")
     
-    results = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=args.num_workers) as executor:
         futures = {executor.submit(process_tile, lf, log_dir, args): lf for lf in labels_files}
         for i, future in enumerate(concurrent.futures.as_completed(futures)):
             res = future.result()
             tile_name = os.path.basename(futures[future]).replace("_labels.npy", "")
             print(f"[{i+1}/{len(futures)}] Finished {tile_name}")
-            if res: results.extend(res)
+            
+            if res:
+                for r in res:
+                    if not df.empty and 'tile' in df.columns and 'algorithm' in df.columns:
+                        df = df[~((df['tile'] == r['tile']) & (df['algorithm'] == r['algorithm']))]
+                    df = pd.concat([df, pd.DataFrame([r])], ignore_index=True)
                 
-    df = pd.DataFrame(results)
-    df.to_csv(args.out_csv, index=False)
-    print(f"Saved benchmark results to {args.out_csv}")
+                # Real-time save to CSV
+                df.to_csv(args.out_csv, index=False)
     
     if args.plot and not df.empty:
         import matplotlib.pyplot as plt
-        valid_df = df.dropna(subset=["f1_score"])
-        summary = valid_df.groupby("algorithm")[["precision", "recall", "f1_score", "iou"]].mean()
+        valid_df = df.dropna(subset=["trunk_f1_score"])
+        summary = valid_df.groupby("algorithm")[["trunk_precision", "trunk_recall", "trunk_f1_score", "trunk_iou"]].mean()
         
         ax = summary.plot(kind="bar", figsize=(10, 6))
         plt.title("Separation Algorithm Performance Comparison")
