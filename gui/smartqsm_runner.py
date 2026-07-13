@@ -68,7 +68,9 @@ def run_smartqsm_on_segments(point_cloud, instance_labels, out_dir, config, log=
     cmd = [sq_py, os.path.join("entrypoints", "smartqsm.py"), "-y", "-t", "-c", sq_cfg, *files]
     _log(f"[SmartQSM] running on {len(files)} segment(s)...\n")
     try:
-        subprocess.run(cmd, cwd=sq_dir, capture_output=True, text=True)
+        res = subprocess.run(cmd, cwd=sq_dir, capture_output=True, text=True)
+        if res.returncode != 0:
+            _log(f"[SmartQSM] subprocess returned {res.returncode}\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}\n")
     except Exception as exc:
         _log(f"[SmartQSM] failed: {exc}\n")
         return empty
