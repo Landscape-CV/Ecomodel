@@ -249,7 +249,7 @@ class EcomodelLite:
         csf.params.class_threshold  = self.csf_class_threshold
         csf.params.interations      = self.csf_iterations   # CSF library typo preserved
 
-        csf.setPointCloud(point_cloud)
+        csf.setPointCloud(point_cloud[:, :3])
         ground     = CSF.VecInt()
         non_ground = CSF.VecInt()
         csf.do_filtering(ground, non_ground, exportCloth=False)
