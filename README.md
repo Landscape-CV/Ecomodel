@@ -97,6 +97,47 @@ Bugs and suggestions go in **Issues**. Please check for an existing report first
 For fixes and small features, open a pull request and link it to an issue where you can.
 For anything larger, talk to the dev team first so we can plan it together.
 
+
+# Troubleshooting & Machine-Specific Configurations
+
+## SmartQSM on NVIDIA RTX 5070 Ti (Blackwell Architecture)
+When running the experimental pipeline or benchmarking against **SmartQSM** on next-gen hardware like the RTX 5070 Ti, several machine-specific modifications were required to ensure compatibility and concurrent execution:
+
+### 1. PyTorch Nightly & CUDA 12.8
+The Blackwell architecture (RTX 5000 series) is not fully supported by older CUDA runtime binaries bundled with stable PyTorch releases. To resolve CUDA architecture mismatch errors, we explicitly installed the **PyTorch Nightly (dev) build** compiled against **CUDA 12.8**:
+```bash
+# Example nightly installation (ensure you match the cu128 index)
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+```
+*(Verified running on `2.12.0.dev+cu128`)*
+
+### 2. SmartQSM Python Syntax Fixes
+Depending on the local Python version, the original `SmartQSM` repository may throw `SyntaxError` due to nested f-strings with identical quote types. 
+- **Files patched:** `thirdparty/SmartQSM/entrypoints/smartqsm.py` and `thirdparty/SmartQSM/entrypoints/_updater.py`
+- **Fix:** Refactored inline `.join()` calls out of f-strings. (e.g., extracting `skipped_str = '\n'.join(skipped_files)` before printing).
+
+### 3. Disabling SmartQSM FileLocks for Multi-Processing
+By default, the `smartqsm.py` entrypoint enforces a strict `FileLock` (`lock.acquire()`), which aggressively prevents multiple instances from running concurrently.
+- Because our pipeline benchmarks multiple point cloud tiles in parallel using `ProcessPoolExecutor`, this lock caused instant `Timeout` failures.
+- **Fix:** We manually commented out the `FileLock` acquisition and release blocks in `thirdparty/SmartQSM/entrypoints/smartqsm.py` to allow parallel inference across different sub-processes.
+
+### 4. Spconv Support for CUDA 12.8 (Issue #775)
+The `spconv` library (used for sparse convolutions in our deep learning models) lacks official prebuilt stable wheels for CUDA 12.8/13.0 (see [spconv/issues/775](https://github.com/traveller59/spconv/issues/775)).
+- If you use the standard `spconv-cu121` or `spconv-cu118` on a Blackwell GPU, it will fail at runtime with NVCC/NVRTC architecture compilation errors.
+- **Fix:** You must uninstall older versions and explicitly install the experimental `spconv-cu128` (e.g. `2.4.1`), or build it from source:
+```bash
+pip uninstall spconv-cu121
+pip install spconv-cu128==2.4.1
+```
+
+### Contributing Fixes
+
+You may create a fork of our repository to submit a pull request. Your request will be reviewed and if approved will be incorporated. For best chances at approval, attach to an existing issue or create your own to resolve. 
+
+### Contributing New Features
+
+If you have a simple feature to add, you may follow the same procedure as contributing a fix. However, if you have a larger feature, collaboration with the broader team may be warranted. If you feel this is the case, please reach out to someone on the dev team and a plan can be developed for your collaboration and certain permissions may be granted. 
+
 ## License
 
-GPL-3.0
+PyTLidar is published under the GPL 3.0 License
