@@ -1,57 +1,54 @@
-import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import numpy as np
+import os
+import argparse
 
 def main():
-    csv_path = r"d:\Projects\PyTLidar\SyntheticPipeline\output\benchmark_results_single.csv"
-    if not os.path.exists(csv_path):
-        print(f"File not found: {csv_path}")
-        return
-        
-    df = pd.read_csv(csv_path)
-    # Filter out invalid rows where f1 score is missing or error occurred
-    df = df.dropna(subset=['trunk_f1_score'])
+    parser = argparse.ArgumentParser(description="Plot performance by species")
+    parser.add_argument("--csv", type=str, required=True, help="Path to benchmark_results_single.csv")
+    parser.add_argument("--out", type=str, required=True, help="Path to output png")
+    args = parser.parse_args()
     
-    # Extract species from tile name (e.g. ca_black_oak_tile_0 -> ca_black_oak)
-    # The convention is everything before '_tile_'
-    df['species'] = df['tile'].apply(lambda x: x.split('_tile_')[0].replace('_', ' ').title())
+    df = pd.read_csv(args.csv)
     
-    metrics = ['trunk_precision', 'trunk_recall', 'trunk_f1_score', 'trunk_iou']
+    # Extract species from tile name (e.g., 'barley_tile_1' -> 'barley')
+    df['species'] = df['tile'].apply(lambda x: x.split('_tile_')[0])
     
-    # Set the style
+    # Group by species and algorithm, and calculate mean metrics
+    metrics = ['trunk_f1_score', 'canopy_f1_score', 'trunk_iou', 'canopy_iou']
+    summary = df.groupby(['species', 'algorithm'])[metrics].mean().reset_index()
+    
+    # Set up the plot grid (2x2 subplots)
+    fig, axes = plt.subplots(2, 2, figsize=(20, 14))
     sns.set_theme(style="whitegrid")
     
-    # Create a figure with subplots for each metric
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    axes = axes.flatten()
+    titles = {
+        'trunk_f1_score': "Trunk (Wood) F1 Score",
+        'canopy_f1_score': "Canopy (Leaf) F1 Score",
+        'trunk_iou': "Trunk (Wood) IoU",
+        'canopy_iou': "Canopy (Leaf) IoU"
+    }
     
-    for i, metric in enumerate(metrics):
-        sns.barplot(
-            data=df,
-            x='species',
-            y=metric,
-            hue='algorithm',
-            ax=axes[i],
-            errorbar=None
-        )
-        axes[i].set_title(f"{metric.replace('_', ' ').title()} by Species")
-        axes[i].set_ylabel("Score")
-        axes[i].set_xlabel("Species")
-        axes[i].tick_params(axis='x', rotation=45)
-        axes[i].set_ylim(0, 1.05)
-        
-        # Place legend nicely
-        if i == 0:
-            axes[i].legend(title='Algorithm', loc='upper right')
+    for ax, metric in zip(axes.flatten(), metrics):
+        sns.barplot(x="species", y=metric, hue="algorithm", data=summary, palette="viridis", ax=ax)
+        ax.set_title(titles[metric], fontsize=16)
+        ax.set_xlabel("")
+        ax.set_ylabel("Score", fontsize=12)
+        ax.set_ylim(0, 1.05)
+        ax.tick_params(axis='x', rotation=45)
+        # Only show legend on the first subplot to save space
+        if ax != axes[0, 0]:
+            ax.get_legend().remove()
         else:
-            axes[i].get_legend().remove()
+            ax.legend(title='Algorithm', loc='upper right')
             
     plt.tight_layout()
-    out_path = os.path.join(os.path.dirname(csv_path), "visualizations", "species_comparison.png")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    plt.savefig(out_path, dpi=300, bbox_inches='tight')
-    print(f"Saved species breakdown plot to {out_path}")
+    
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    plt.savefig(args.out, dpi=300, bbox_inches='tight')
+    print(f"Saved comprehensive species comparison plot to {args.out}")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
