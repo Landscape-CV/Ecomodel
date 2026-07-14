@@ -1,212 +1,102 @@
-# PyTLidar
+# Ecomodel
 
-PyTLidar is a python module designed for manipulating and calculating metrics from terrestrial lidar data. Version 1 makes the TreeQSM[link] capabilites available through Python, eliminating the need for proprietary tools. Development of version 2.0 is in progress to enhance the capabilities with tree segmentation, calculation of digital elevation models, and detailed environmental measurements at scale.
+Ecomodel turns terrestrial LiDAR scans of forest plots into per-tree structural models.
+It takes raw `.las` / `.laz` tiles, removes the ground, separates individual trees, then
+fits a Quantitative Structure Model (QSM). A QSM is a cylinder skeleton of every trunk and
+branch. You can view it, measure it, and run spatial queries against it in the GUI.
 
+QSM fitting is powered by [TreeQSM](#treeqsm-engine), available here as a standalone Python
+implementation.
 
+> **Status:** active development. Expect rough edges.
 
-# Installation
+![QSM skeleton fitted to a scanned tree, shown over the source point cloud](Docs/figs/gui_qsm_skeleton.png)
 
-The release version of PyTLidar can be installed as a standard python package.
+---
 
-**Note**: Due to Open3d dependency. Python version must be between Python 3.8 and 3.11 (inclusive)
+## Install
 
-```
-pip install PyTLidar
-```
-# Development Installation
+Requires **Python 3.8 to 3.11**. Python 3.12 is not supported because Open3D has no build
+for it. We recommend 3.11.
 
-If you are contributing to PyTLidar or would like to try one of the experimental packages, you may install following these instructions:
+```bash
+conda create -n ecomodel python=3.11
+conda activate ecomodel
 
-In your terminal navigate to the folder you want to clone this repo into and clone with 
-```
-git clone https://github.com/Landscape-CV/PyTLidar.git
-cd PyTLidar
-```
-## Create a .venv & requirements installed
-### Mac
-```
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-```
-### Windows
-```
-python -m venv .venv
-. .venv/Scripts/activate
+git clone https://github.com/Landscape-CV/Ecomodel.git
+cd Ecomodel
 pip install -r requirements.txt
 ```
 
-# TreeQSM
+## Quick start
 
-### TreeQSM Application Usage
-
-Below is a quick start guide to using PyTLidar. For further detail, see [Docs](Docs)
-
-To launch the GUI application run
-```
-python -m PyTLidar.main
+```bash
+python run_gui.py
 ```
 
+Point **LAS/LAZ Folder** at a directory of tiles, pick a pipeline mode, then press **Start**.
 
-The below interface will appear, with instructions for generating your QSM models.
-You may choose to run a single file or multiple, with the ability to view the point cloud and results on the subsequent screen.
+> The pipeline processes **every** `.las` / `.laz` file directly inside that folder.
+> Subfolders are ignored. Keep one dataset per folder.
 
+![Pipeline page: parameters on the left, run controls and log on the right](Docs/figs/gui_pipeline.png)
 
-![Software interface for user input and data selection. \label{fig:pc1}](paper/figs/fig1.jpg)
+## The pipeline
 
+There are two modes. **Lite** is the CPU pipeline and the one to start with. **Full** is the
+larger GPU-accelerated pipeline for big scans.
 
-We also provide multiple command line interface options using PyTLidar.treeqsm and PyTLidar.treeqsm_batch
+Lite runs six steps per tile:
 
-You may run the following your terminal
+| # | Step | Notes |
+|---|------|-------|
+| 1 | Load & normalise | |
+| 2 | Ground removal | Cloth Simulation Filter (CSF) |
+| 3 | Intensity filter | drops low-return points |
+| 4 | Leaf removal | region-growing (RGI) |
+| 5 | Instance segmentation | splits the tile into individual trees |
+| 6 | QSM | fits cylinders per tree |
 
-```
-python -m PyTLidar.treeqsm file.las
-```
-or to run a full folder of las files in batch mode
-```
-python -m PyTLidar.treeqsm_batch folder
-```
-The below arguments can also be passed to provide full functionality 
+Each stage has its own parameter group in the left-hand panel. Groups are collapsed by
+default and use the values shown until you enable them.
 
-    -intensity: filter point cloud based on values greater than the indicated intensity
+## Results
 
-    -normalize: recenter point cloud locations. Use this if your point cloud X, Y location values are very large (e.g., using UTM coordinates rather than a local coordinate system).
+Each run writes a timestamped folder under your results directory. Open it from the
+**Results** page to view:
 
-    -custominput: user sets specific patch diameters to test
+- **Point Cloud**: the processed cloud, coloured by height or intensity
+- **Segments**: coloured by tree, for checking segmentation
+- **Cylinders / Skeleton**: the fitted QSM
+- **Tree Metrics**: per-tree volume, height and branch statistics
 
-    -ipd: initial patch diameter
+**Query** answers spatial questions against a finished run, such as the cylinder volume
+within a radius of a point.
 
-    -minpd: min patch diameter
+![Results page showing the processed point cloud coloured by height](Docs/figs/gui_point_cloud.png)
 
-    -maxpd: maximum patch diameter
+![Tree Metrics page: diameter, length and branch angle distributions with a summary table](Docs/figs/gui_tree_metrics.png)
 
-    -name: specifies a name for the current modeling run. This will be appended to the name generated by PyTLidar
+## TreeQSM engine
 
-    -outputdirectory: specifies the directory to put the "results" folder
+The QSM step is a Python port of TreeQSM. It can be used on its own without the GUI:
 
-    -numcores: specify number of cores to use to process files in parallel. Only valid in batched mode, Must be a single integer
-
-    -optimum: specify an optimum metric to select best model to save 
-
-    -help: displays the run options
-
-    -verbose: verbose mode, displays outputs from PyTLidar as it processes
-
-    -h: displays the run options
-
-    -v: verbose mode
-
-Examples:
-
-1. Create a QSM for a single file, normalizing the file, and using 2 initial patch diameter values generated based on structural assumptions
-```
-python -m PyTLidar.treeqsm file.las --normalize --ipd 2
-```
-2.  Create a QSM for multiple files, with normalization, testing a specific set of patch diameter values, saving only the best model based on lowest mean distance to trunk
-```
-python -m PyTLidar.treeqsm_batch folder --normalize --custominput --ipd .05 .08 --minpd .03 .05 --maxpd .1 --optimum trunk_mean_dis
+```bash
+python -m PyTLidar.treeqsm file.las --normalize        # single file
+python -m PyTLidar.treeqsm_batch folder --normalize    # a folder, in parallel
 ```
 
-### TreeQSM Module Quick Start
+Run with `--help` for the full option list, including patch diameters, optimum-model
+selection, output directory and core count. See [Docs](Docs) for the module API and the
+metrics definitions.
 
-Below is the algorithm sequence of the TreeQSM process on a single file and testing a single set of values. See treeqsm.py for a full implementation.
-```
-import PyTLidar.treeqsm as qsm
+## Contributing
 
+Bugs and suggestions go in **Issues**. Please check for an existing report first.
 
-file = 'example_pine.las'
+For fixes and small features, open a pull request and link it to an issue where you can.
+For anything larger, talk to the dev team first so we can plan it together.
 
-P = qsm.Utils.load_point_cloud(file) #Load las file
+## License
 
-P = P - np.mean(P,axis = 0) #Normalize points
-
-Inputs = define_input(P, 1, 1, 1)[0] #Create input parameter structure
-# Inputs can be specified 
-Inputs['PatchDiam1'] = [0.05] #Initial size of cover sets, lower values will capture more detail, but are more susceptible to occlusion
-Inputs['PatchDiam2Min'] = [0.03] #Minimum cover set size for second pass
-Inputs['PatchDiam2Max'] = [0.12] #Maximum cover set size for second pass
-Inputs['BallRad1'] = [0.06] #radius around cover set midpoint to check for neighbors, should be slightly larger than PatchDiam1
-Inputs['BallRad2'] = [0.13] #Ball Radius for second pass, should be slightly larger than PatchDiam2Max
-Inputs['plot'] = 0 #Flag for plot generation during runtime
-
-cover1 = qsm.cover_sets(P,Inputs) #Generate initial cover sets and neighbors
-cover1, Base, Forb = qsm.tree_sets(P, cover1, Inputs) #Tree set generation/detection of base points
-segment1 = qsm.segments(cover1,Base,Forb) #Segment generation
-segment1 = qsm.correct_segments(P,cover1,segment1,Inputs,0,1,1) #Segment Correction
-RS = qsm.relative_size(P, cover1, segment1) #Calculation of relative size for generation of new cover sets
-cover2 = qsm.cover_sets(P, Inputs, RS) # Cover set Generation, 2nd Pass
-cover2, Base, Forb = qsm.tree_sets(P, cover2, Inputs, segment1) # Tree set generation
-segment2 = qsm.segments(cover2, Base, Forb) #Segment Generation, 2nd Pass
-segment2 = qsm.correct_segments(P, cover2, segment2, Inputs, 1, 1, 0)#Segment correction, 2nd Pass
-cylinder = qsm.cylinders(P,cover2,segment2,Inputs) #Fit Cylinders
-branch = qsm.branches(cylinder)#Calculate branch metrics
-#Extract Trunk points:
-T = segment2['segments'][0]  
-T = np.concatenate(T)  
-T = np.concatenate([cover2['ball'][idx] for idx in T]) 
-trunk = P[T, :]  # Point cloud of the trunk
-treedata, _ = qsm.tree_data(cylinder, branch, trunk, inputs,iter )
-
-```
-# Tests
-
-Run the tests using pytest:
-```
-pytest
-```
-
-This will run all the test cases under the tests/ directory. The tests include basic functionality checks for the core components of QSM creation.
-
-You can also run specific tests by passing the test file or function name:
-
-pytest tests/test_calculate.py
-
-Due to the complex nature of inputs and outputs of the algorithm, manual tests are also recommended. Using Dataset/example_pine.las run:
-
-```
-python -m PyTLidar.treeqsm example_pine.las --normalize --verbose 
-```
-
-Compare the tree_data_Tree1_t1_m1.txt file that is generated to Dataset/results/example_pine_tree_data.txt. The algorithm is randomized, so many values will not match, but no value should be significantly different. 
-
-This test can also be run using the GUI, and a visual check can also be done as a sanity check on the resulting numbers.
-# Under Development
-
-Below are functionalities that are under active development to be included in future pip versions.
-## Tree Segmentation
-
-## Graph-Based Leaf Separation
-
-## Region Growing Leaf Separation
-
-## Ecomodel
-Ecomodel is an experimental module intended to provide detailed metrics for complex environments
-
-### Create a .env file
-make a file in your parent director named `.env` and paste the following into it replace the ... with the filepath to your data
-```
-DATA_FOLDER_FILEPATH = ...
-```
-# Contributing
-## Reporting Bugs
-
-Submit a Report: You may submit your bug report to issues. Please include any relevant output.
-Check to see if your issue has already been reported, commenting on the issue may help pinpoint the fix and also elevate the priority.
-
-## Suggestions
-
-Share your thoughts: You may submit your idea in issues as well. The more descriptive the better, but minor usability suggestions are welcome.
-
-## Development
-
-### Contributing Fixes
-
-You may create a fork of our repository to submit a pull request. Your request will be reviewed and if approved will be incorporated. For best chances at approval, attach to an existing issue or create your own to resolve. 
-
-### Contributing New Features
-
-If you have a simple feature to add, you may follow the same procedure as contributing a fix. However, if you have a larger feature, collaboration with the broader team may be warranted. If you feel this is the case, please reach out to someone on the dev team and a plan can be developed for your collaboration and certain permissions may be granted. 
-
-# License
-
-PyTLidar is published under the GPL 3.0 License 
+GPL-3.0
