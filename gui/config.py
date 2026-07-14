@@ -127,6 +127,12 @@ class EcomodelConfig:
     # multi-tree tile would collapse into one tangled trunk.
     lite_single_tree: bool = False
 
+    # Stop after instance segmentation, before the QSM step. The segmented cloud
+    # is still saved and the run still appears in Results (Segments view), so the
+    # segmentation can be checked before spending GPU time fitting cylinders to
+    # segments that may be wrong.
+    lite_stop_after_segmentation: bool = False
+
     # ── Lite: QSM method ──────────────────────────────────────────────────────
     lite_qsm_method: str = "treeqsm"        # "treeqsm" | "smartqsm"
     smartqsm_dir: str = ""

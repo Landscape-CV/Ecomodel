@@ -10,7 +10,7 @@ Pipeline steps (per tile):
   3. Intensity filter
   4. Leaf removal (RGI)
   5. Instance segmentation
-  6. TreeQSM (cylinders)
+  6. QSM (TreeQSM or SmartQSM) -- skipped when lite_stop_after_segmentation
 
 Output layout (under the run_dir):
   {run_dir}/
@@ -283,24 +283,35 @@ def run_ecomodel_lite_pipeline(
                     np.concatenate([full_data[:, :3], instance_labels[:, np.newaxis]], axis=1),
                 )
 
-            # ── Step 6: TreeQSM ───────────────────────────────────────────────
+            # ── Step 6: QSM ───────────────────────────────────────────────────
             _check_stop()
             _progress(tile_offset + 6, total_steps,
                       f"Tile {i+1}/{total_tiles} - {_STEP_LABELS[5]}")
+            stop_after_seg = getattr(config, "lite_stop_after_segmentation", False)
             qsm_method = getattr(config, "lite_qsm_method", "treeqsm")
-            _log(f"[Lite]   [6/{_STEPS_PER_TILE}] QSM ({qsm_method})...\n")
 
-            if qsm_method == "smartqsm":
+            if stop_after_seg:
+                _log(f"[Lite]   [6/{_STEPS_PER_TILE}] QSM skipped "
+                     f"(stop-after-segmentation). Check the Segments view in Results.\n")
+                cylinder_data = np.empty((0, 8))
+                tile_tree_metrics = []
+            elif qsm_method == "smartqsm":
+                _log(f"[Lite]   [6/{_STEPS_PER_TILE}] QSM ({qsm_method})...\n")
                 from gui.smartqsm_runner import run_smartqsm_on_segments
                 cylinder_data = run_smartqsm_on_segments(
                     full_data, instance_labels, str(run_dir / tile_name), config, _log)
                 tile_tree_metrics = []   # SmartQSM does not produce tree_data
             else:
+                _log(f"[Lite]   [6/{_STEPS_PER_TILE}] QSM ({qsm_method})...\n")
                 cylinder_data, tile_tree_metrics = model.get_cylinders(full_data, instance_labels)
 
             # ── Save tile results ─────────────────────────────────────────────
+            # A stop-after-segmentation run has no cylinders; the empty file keeps
+            # the run's layout uniform and the Results page renders its own
+            # "QSM not run" placeholder.
             cyl_file = run_dir / tile_name / f"{tile_name}_cylinders.txt"
-            cylinder_out = model.unnormalize_point_cloud(cylinder_data.copy())
+            cylinder_out = model.unnormalize_point_cloud(cylinder_data.copy()) \
+                if len(cylinder_data) else cylinder_data
             np.savetxt(str(cyl_file), cylinder_out)
 
             unnorm_data = model.unnormalize_point_cloud(full_data.copy())

@@ -286,6 +286,16 @@ class EcomodelMainWindow(QMainWindow):
         )
         ll.addWidget(self._lite_single_tree, 5, 0, 1, 2)
 
+        self._lite_stop_after_seg = QCheckBox("Stop after segmentation (skip QSM)")
+        self._lite_stop_after_seg.setChecked(
+            getattr(self._defaults, "lite_stop_after_segmentation", False))
+        self._lite_stop_after_seg.setToolTip(
+            "Run the pipeline up to instance segmentation and stop. Inspect the "
+            "result on the Results page (Segments view) to check the tile was split "
+            "into trees correctly before spending GPU time on the QSM fit."
+        )
+        ll.addWidget(self._lite_stop_after_seg, 6, 0, 1, 2)
+
         lg.setVisible(False)
         layout.addWidget(lg)
 
@@ -766,6 +776,7 @@ class EcomodelMainWindow(QMainWindow):
             lite_ball_rad2=self._lite_ball_rad2.value(),
             lite_segmenter_type="treelearn" if self._lite_segmenter.currentIndex() == 1 else "scanline",
             lite_single_tree=self._lite_single_tree.isChecked(),
+            lite_stop_after_segmentation=self._lite_stop_after_seg.isChecked(),
             treelearn_config_path=self._treelearn_config.text().strip(),
             treelearn_use_gpu=self._treelearn_gpu.isChecked(),
             lite_qsm_method="smartqsm" if self._lite_qsm_method.currentIndex() == 1 else "treeqsm",
