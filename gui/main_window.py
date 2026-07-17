@@ -247,34 +247,38 @@ class EcomodelMainWindow(QMainWindow):
         self._lite_qsm_method = QComboBox()
         self._lite_qsm_method.addItems(["TreeQSM", "SmartQSM"])
         self._lite_qsm_method.setToolTip("SmartQSM is an external tool installed separately.")
+        self._lite_qsm_method.setCurrentIndex(1)   # default to SmartQSM
         ll.addWidget(self._lite_qsm_method, 3, 1)
 
-        self._smartqsm_widget = QWidget()
-        sqw = QGridLayout(self._smartqsm_widget)
-        sqw.setContentsMargins(0, 0, 0, 0)
-        self._smartqsm_dir = QLineEdit(self._defaults.smartqsm_dir)
-        self._smartqsm_dir.setPlaceholderText("SmartQSM checkout folder...")
-        _sq_db = QPushButton("Browse…")
-        _sq_db.clicked.connect(self._browse_smartqsm_dir)
-        sqw.addWidget(QLabel("SmartQSM dir:"), 0, 0)
-        sqw.addWidget(self._smartqsm_dir, 0, 1)
-        sqw.addWidget(_sq_db, 0, 2)
-        self._smartqsm_python = QLineEdit(self._defaults.smartqsm_python)
-        self._smartqsm_python.setPlaceholderText("SmartQSM venv python.exe...")
-        _sq_pb = QPushButton("Browse…")
-        _sq_pb.clicked.connect(self._browse_smartqsm_python)
-        sqw.addWidget(QLabel("SmartQSM python:"), 1, 0)
-        sqw.addWidget(self._smartqsm_python, 1, 1)
-        sqw.addWidget(_sq_pb, 1, 2)
-        self._smartqsm_config = QLineEdit(self._defaults.smartqsm_config)
-        self._smartqsm_config.setPlaceholderText("SmartQSM config YAML...")
-        _sq_cb = QPushButton("Browse…")
-        _sq_cb.clicked.connect(self._browse_smartqsm_config)
-        sqw.addWidget(QLabel("SmartQSM config:"), 2, 0)
-        sqw.addWidget(self._smartqsm_config, 2, 1)
-        sqw.addWidget(_sq_cb, 2, 2)
-        self._smartqsm_widget.setVisible(False)
-        ll.addWidget(self._smartqsm_widget, 4, 0, 1, 2)
+        # SmartQSM local-path controls commented out: SmartQSM now runs on the
+        # remote Modal GPU service (config.smartqsm_url), so no local checkout /
+        # venv python / config YAML needs to be chosen in the GUI.
+        # self._smartqsm_widget = QWidget()
+        # sqw = QGridLayout(self._smartqsm_widget)
+        # sqw.setContentsMargins(0, 0, 0, 0)
+        # self._smartqsm_dir = QLineEdit(self._defaults.smartqsm_dir)
+        # self._smartqsm_dir.setPlaceholderText("SmartQSM checkout folder...")
+        # _sq_db = QPushButton("Browse…")
+        # _sq_db.clicked.connect(self._browse_smartqsm_dir)
+        # sqw.addWidget(QLabel("SmartQSM dir:"), 0, 0)
+        # sqw.addWidget(self._smartqsm_dir, 0, 1)
+        # sqw.addWidget(_sq_db, 0, 2)
+        # self._smartqsm_python = QLineEdit(self._defaults.smartqsm_python)
+        # self._smartqsm_python.setPlaceholderText("SmartQSM venv python.exe...")
+        # _sq_pb = QPushButton("Browse…")
+        # _sq_pb.clicked.connect(self._browse_smartqsm_python)
+        # sqw.addWidget(QLabel("SmartQSM python:"), 1, 0)
+        # sqw.addWidget(self._smartqsm_python, 1, 1)
+        # sqw.addWidget(_sq_pb, 1, 2)
+        # self._smartqsm_config = QLineEdit(self._defaults.smartqsm_config)
+        # self._smartqsm_config.setPlaceholderText("SmartQSM config YAML...")
+        # _sq_cb = QPushButton("Browse…")
+        # _sq_cb.clicked.connect(self._browse_smartqsm_config)
+        # sqw.addWidget(QLabel("SmartQSM config:"), 2, 0)
+        # sqw.addWidget(self._smartqsm_config, 2, 1)
+        # sqw.addWidget(_sq_cb, 2, 2)
+        # self._smartqsm_widget.setVisible(False)
+        # ll.addWidget(self._smartqsm_widget, 4, 0, 1, 2)
         self._lite_qsm_method.currentIndexChanged.connect(self._on_lite_qsm_method_changed)
 
         self._lite_single_tree = QCheckBox("Single tree (skip segmentation)")
@@ -780,9 +784,10 @@ class EcomodelMainWindow(QMainWindow):
             treelearn_config_path=self._treelearn_config.text().strip(),
             treelearn_use_gpu=self._treelearn_gpu.isChecked(),
             lite_qsm_method="smartqsm" if self._lite_qsm_method.currentIndex() == 1 else "treeqsm",
-            smartqsm_dir=self._smartqsm_dir.text().strip(),
-            smartqsm_python=self._smartqsm_python.text().strip(),
-            smartqsm_config=self._smartqsm_config.text().strip(),
+            # SmartQSM local paths removed from the UI (runs on Modal); use config defaults.
+            smartqsm_dir=self._defaults.smartqsm_dir,
+            smartqsm_python=self._defaults.smartqsm_python,
+            smartqsm_config=self._defaults.smartqsm_config,
         )
 
     # ── Pipeline control ──────────────────────────────────────────────────────
@@ -903,30 +908,33 @@ class EcomodelMainWindow(QMainWindow):
         self._treelearn_widget.setVisible(index == 1)
 
     def _on_lite_qsm_method_changed(self, index: int) -> None:
-        """Show SmartQSM path controls; cover sets are TreeQSM-only."""
-        self._smartqsm_widget.setVisible(index == 1)
+        """Cover sets are TreeQSM-only, so hide them when SmartQSM is picked."""
+        # SmartQSM path controls removed (SmartQSM runs on Modal); nothing to show.
+        # self._smartqsm_widget.setVisible(index == 1)
         if self._pipeline_mode.currentIndex() == 1:   # lite mode
             self._lite_cover_group.setVisible(index == 0)
 
-    def _browse_smartqsm_dir(self) -> None:
-        d = QFileDialog.getExistingDirectory(
-            self, "Select SmartQSM checkout", self._smartqsm_dir.text() or "")
-        if d:
-            self._smartqsm_dir.setText(d)
-
-    def _browse_smartqsm_python(self) -> None:
-        p, _ = QFileDialog.getOpenFileName(
-            self, "Select SmartQSM python", self._smartqsm_python.text() or "",
-            "Python (python*.exe);;All files (*)")
-        if p:
-            self._smartqsm_python.setText(p)
-
-    def _browse_smartqsm_config(self) -> None:
-        p, _ = QFileDialog.getOpenFileName(
-            self, "Select SmartQSM config", self._smartqsm_config.text() or "",
-            "YAML (*.yaml *.yml);;All files (*)")
-        if p:
-            self._smartqsm_config.setText(p)
+    # SmartQSM path pickers commented out — the dir/python/config fields were
+    # removed from the UI (SmartQSM runs on the Modal GPU service, not locally).
+    # def _browse_smartqsm_dir(self) -> None:
+    #     d = QFileDialog.getExistingDirectory(
+    #         self, "Select SmartQSM checkout", self._smartqsm_dir.text() or "")
+    #     if d:
+    #         self._smartqsm_dir.setText(d)
+    #
+    # def _browse_smartqsm_python(self) -> None:
+    #     p, _ = QFileDialog.getOpenFileName(
+    #         self, "Select SmartQSM python", self._smartqsm_python.text() or "",
+    #         "Python (python*.exe);;All files (*)")
+    #     if p:
+    #         self._smartqsm_python.setText(p)
+    #
+    # def _browse_smartqsm_config(self) -> None:
+    #     p, _ = QFileDialog.getOpenFileName(
+    #         self, "Select SmartQSM config", self._smartqsm_config.text() or "",
+    #         "YAML (*.yaml *.yml);;All files (*)")
+    #     if p:
+    #         self._smartqsm_config.setText(p)
 
     def _browse_treelearn_config(self) -> None:
         """Open file picker for TreeLearn YAML config."""
