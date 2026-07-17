@@ -86,7 +86,21 @@ app = modal.App(APP_NAME, image=image)
 
 
 def _parse_qsm_mat(mat_path):
-    """SmartQSM *_qsm.mat -> Cx8 [start(3), radius, axis(3), length]."""
+    """Read SmartQSM's output file and flatten it into a plain number table.
+
+    SmartQSM writes its answer as a MATLAB `.mat` file containing one entry per
+    fitted cylinder. Each cylinder is described by four things: where it starts
+    (a 3D point), how thick it is (radius), which way it points (a 3D direction),
+    and how long it is.
+
+    This pulls those four fields out and glues them side by side into a single
+    C-by-8 table (C = number of cylinders), one row per cylinder:
+
+        [start_x, start_y, start_z, radius, axis_x, axis_y, axis_z, length]
+
+    That Cx8 layout is what the Ecomodel GUI expects, so this is the translation
+    step between SmartQSM's format and ours.
+    """
     import numpy as np
     import scipy.io as sio
     m = sio.loadmat(mat_path, simplify_cells=True)
@@ -103,6 +117,38 @@ def _parse_qsm_mat(mat_path):
 # ── GPU function: one segment in, Cx8 out. Scales to zero when idle. ──────────
 @app.function(gpu=GPU_TYPE, timeout=1800)
 def run_smartqsm(points_bytes: bytes) -> bytes:
+    """Reconstruct ONE tree on a GPU. Points in, cylinders out.
+
+    This is the only function that touches the GPU, and it is the whole reason
+    Modal is here: SmartQSM's neural network needs CUDA + Linux, which the Mac
+    cannot provide.
+
+    The `@app.function(gpu="T4", ...)` line above is what makes that happen. When
+    this function is called, Modal boots a container with a T4 GPU, runs the body,
+    then shuts it down. Nothing is running (or being billed) in between.
+
+    What it does, step by step:
+      1. Take the raw bytes of a .npy file and turn them back into an (N,3) array
+         of XYZ points. This is one tree's worth of points, sent by the Mac.
+      2. Write them to a scratch .xyz text file, because SmartQSM is a
+         command-line tool that reads files, not a Python library we can call.
+      3. Shell out to SmartQSM and wait for it to finish. `xvfb-run` fakes a
+         display, because SmartQSM insists on loading GUI libraries at startup
+         even when running headless.
+      4. SmartQSM leaves its answer in a `seg_qsm.mat` file next to the input.
+         If that file is missing, the run failed, so raise with its error output.
+      5. Convert the .mat into the Cx8 table and hand it back as .npy bytes.
+
+    Args:
+        points_bytes: a .npy file, as raw bytes, holding an (N,3) float array.
+
+    Returns:
+        A .npy file, as raw bytes, holding the Cx8 cylinder table.
+
+    Note the 1800s (30 min) timeout in the decorator. Modal kills the job at that
+    point. One tree finishes in a few minutes; a whole un-segmented tile does not
+    finish at all. See Docs/KNOWN_ISSUES.md.
+    """
     import io
     import os
     import subprocess
@@ -133,22 +179,66 @@ def run_smartqsm(points_bytes: bytes) -> bytes:
 @app.function()
 @modal.asgi_app()
 def web():
+    """Build the little web server the Mac talks to. Runs on CPU, not the GPU.
+
+    This function is not the website. It *creates* the website (a FastAPI app)
+    and returns it, and Modal then serves it at a permanent public URL. That URL
+    is the one baked into the GUI's `smartqsm_url` config default, which is why
+    users never have to configure anything.
+
+    THE KEY IDEA — why there are two endpoints instead of one:
+
+    A reconstruction takes minutes. If the Mac made one HTTP request and waited
+    for the answer, the connection would time out long before the GPU finished.
+    So the work is split in two, which is the standard "submit and poll" pattern:
+
+        POST /reconstruct  ->  "here are the points, start working"
+                               replies INSTANTLY with a job_id ticket
+        GET  /result/<id>  ->  "is job <id> done yet?"
+                               asked over and over, every few seconds
+
+    Each individual request finishes in milliseconds. The long wait happens on
+    Modal's side, not inside an open connection.
+    """
     from fastapi import FastAPI, Request, Response
 
     api = FastAPI()
 
     @api.get("/health")
     def health():
+        """Is the service alive? Returns which GPU and config it is set up for.
+
+        Handy for `curl <url>/health` after deploying, to check the URL works
+        before involving the GUI. Does not touch the GPU, so it costs nothing.
+        """
         return {"ok": True, "config": CONFIG, "gpu": GPU_TYPE}
 
     @api.post("/reconstruct")
     async def reconstruct(request: Request):
+        """Accept one tree's points and start a GPU job. Does NOT wait for it.
+
+        `.spawn()` is the important bit: it launches run_smartqsm in the
+        background and returns immediately, instead of blocking until it's done.
+        We hand back the job's id so the caller can ask about it later.
+        """
         body = await request.body()
         call = run_smartqsm.spawn(body)          # kick off the GPU job, don't wait
         return {"job_id": call.object_id}
 
     @api.get("/result/{job_id}")
     def result(job_id: str):
+        """Check on a job. One of three answers, depending on how it's going.
+
+        `fc.get(timeout=0)` means "give me the result, but don't wait even a
+        moment for it". So:
+
+            still running  -> it raises TimeoutError -> we reply 202 Accepted,
+                              which tells the caller "not yet, ask again"
+            finished       -> we reply 200 with the Cx8 cylinder table as bytes
+            blew up        -> we reply 500 with the error text
+
+        The Mac's runner keeps calling this every 4 seconds until it gets a 200.
+        """
         fc = modal.FunctionCall.from_id(job_id)
         try:
             out = fc.get(timeout=0)              # non-blocking poll
@@ -163,5 +253,11 @@ def web():
 
 @app.local_entrypoint()
 def main():
+    """Just a reminder, printed if you run this file directly instead of deploying.
+
+    `python deploy/modal_app.py` does nothing useful. The file is meant to be
+    handed to Modal with `modal deploy`, which uploads it, builds the image in
+    Modal's cloud, and prints the public URL.
+    """
     print("Deploy with:  modal deploy deploy/modal_app.py")
     print("Then set SMARTQSM_URL to the printed web URL and use the GUI / test client.")

@@ -199,10 +199,17 @@ def build_segment_meshes(
 
 def build_cylinder_meshes(
     cylinders: dict,
-    line_threshold: float = 0.1,
+    line_threshold: float = 0.005,
 ) -> "tuple[list, np.ndarray, np.ndarray, np.ndarray, np.ndarray]":
     """
     Build VTK meshes for a QSM cylinder view.  Thread-safe.
+
+    ``line_threshold`` (radius, metres) selects which cylinders are drawn as
+    flat 1.5 px lines instead of true-diameter tubes.  Default 0.005 m radius
+    (= 1 cm diameter) renders the full 1-5 cm branch band as true-diameter
+    tubes and keeps only sub-1-cm hair-twigs as cheap lines.  Set 0.0 to draw
+    every cylinder as a tube (matches the SmartQSM ``.ply`` mesh exactly);
+    raise it if a very dense QSM renders slowly.
 
     Returns
     -------
@@ -248,7 +255,14 @@ def build_cylinder_meshes(
             color="steelblue", line_width=1.5, opacity=0.85,
         )))
 
-    # ── Thick cylinders → batch by radius class ────────────────────────────────
+    # ── Thick cylinders → one VTK tube-filter pass per radius class ────────────
+    # Each colour bucket's centrelines are tubed in a single C++ pass, giving
+    # true-diameter tubes identical to the SmartQSM .ply mesh.  This replaces a
+    # per-cylinder pv.Cylinder() + pv.merge() loop that was ~O(n^2) and hung on
+    # dense QSMs (29 k cylinders took >2 min / crashed; the tube filter is
+    # ~0.03 s).  Both endpoints of a segment carry the same radius scalar so
+    # each tube is constant-radius; ``absolute=True`` uses the scalar as the
+    # real radius in metres.
     thick_mask = (~thin_mask) & safe
     if thick_mask.any():
         thick_idx = np.where(thick_mask)[0]
@@ -259,23 +273,44 @@ def build_cylinder_meshes(
         for color, idx_list in class_buckets.items():
             if not idx_list:
                 continue
-            meshes: list[pv.PolyData] = []
-            for i in idx_list:
-                center = starts[i] + (lengths[i] / 2.0) * axis_norm[i]
-                try:
-                    mesh = pv.Cylinder(
-                        center=center.tolist(),
-                        direction=axis_norm[i].tolist(),
-                        radius=float(radii[i]),
-                        height=float(lengths[i]),
-                        resolution=8,
-                    )
-                    meshes.append(mesh)
-                except Exception:
-                    continue
-            if meshes:
-                combined = pv.merge(meshes) if len(meshes) > 1 else meshes[0]
-                mesh_list.append((combined, dict(color=color, opacity=0.85)))
+            idx = np.asarray(idx_list, dtype=np.int_)
+            n_seg = idx.size
+
+            # Points: two per cylinder — its start and end — packed as a flat
+            # (2*n_seg, 3) array with cylinder k's start at row 2k and end at
+            # row 2k+1.  ``[0::2]`` / ``[1::2]`` are strided slices (start:stop:
+            # step) that write every even / every odd row in one vectorised go.
+            seg_pts = np.empty((n_seg * 2, 3), dtype=np.float32)
+            seg_pts[0::2] = starts[idx].astype(np.float32)   # rows 0,2,4,...
+            seg_pts[1::2] = ends[idx].astype(np.float32)     # rows 1,3,5,...
+
+            # Connectivity: VTK stores each line cell as a run [n_points, id0,
+            # id1, ...].  A 2-point line is 3 ints [2, start_id, end_id], so the
+            # flat array is 3*n_seg long:  [2, 0,1,  2, 2,3,  2, 4,5, ...].
+            # The three strided writes fill the interleaved slots:
+            #   [0::3] -> the "2" count for every cell
+            #   [1::3] -> start-point ids 0,2,4,...  (row of each start above)
+            #   [2::3] -> end-point ids   1,3,5,...  (row of each end above)
+            seg_cells = np.empty(n_seg * 3, dtype=np.int_)
+            seg_cells[0::3] = 2
+            seg_cells[1::3] = np.arange(n_seg) * 2
+            seg_cells[2::3] = np.arange(n_seg) * 2 + 1
+            poly = pv.PolyData()
+            poly.points = seg_pts
+            poly.lines = seg_cells
+
+            # Radius scalar on each point; both endpoints get the same value so
+            # the tube filter sweeps a constant-radius tube along each segment.
+            seg_r = np.empty(n_seg * 2, dtype=np.float32)
+            seg_r[0::2] = radii[idx]
+            seg_r[1::2] = radii[idx]
+            poly["radius"] = seg_r
+            try:
+                tube = poly.tube(scalars="radius", absolute=True,
+                                 n_sides=8, capping=True)
+            except Exception:
+                continue
+            mesh_list.append((tube, dict(color=color, opacity=0.85)))
 
     return mesh_list, starts, ends, radii, lengths
 
@@ -480,7 +515,7 @@ def render_segments(
 def render_cylinders(
     plotter,
     cylinders: dict,
-    line_threshold: float = 0.1,
+    line_threshold: float = 0.005,
 ) -> "tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]":
     """Build and apply a cylinder render.  Main thread only."""
     mesh_list, starts, ends, radii, lengths = build_cylinder_meshes(
