@@ -442,58 +442,89 @@ class EcomodelLite:
             
             segment_mask = (labeled_point_cloud[:,3] == tree_instance)
             tree_cloud = labeled_point_cloud[segment_mask, :3]
-            print(tree_instance)
-
-            np.savetxt(f"segment_{tree_instance}.xyz", tree_cloud)
-            print("Removing Small clusters...")
-            tree_cloud = self.noise_remover.remove_distant_small_clusters(tree_cloud)
-            print("Done.")
-
-            if len(tree_cloud) < 100:
-                continue
-            try:
-                qsm_input = define_input(labeled_point_cloud[:,:3], 1, 1, 1)[0]
-            except np.linalg.LinAlgError as e:
-                print(f"Failed to define input {e}")
+            cylinder_data, tm = self.get_cylinders_for_tree(tree_cloud, tree_instance)
+            if len(cylinder_data) == 0:
                 continue
 
-            np.savetxt("troubled_segment.xyz", tree_cloud)
+            cylinder_starts = np.concatenate([cylinder_starts, cylinder_data[:, :3]])
+            cylinder_radii = np.append(cylinder_radii, cylinder_data[:, 3])
+            cylinder_axes = np.concatenate([cylinder_axes, cylinder_data[:, 4:7]])
+            cylinder_lengths = np.append(cylinder_lengths, cylinder_data[:, 7])
+            cylinder_branchorders = np.append(cylinder_branchorders, cylinder_data[:, 8])
 
-            qsm_input.update(self._qsm_params)
-
-            try: 
-                cover1 = cover_sets(tree_cloud, qsm_input)
-                cover1, Base, Forb = tree_sets(tree_cloud, cover1, qsm_input)
-                segment1 = segments(cover1, Base, Forb, qsm=True)
-                segment1 = correct_segments(tree_cloud, cover1, segment1, qsm_input, 0, 1, 1)
-                RS = relative_size(tree_cloud, cover1, segment1)
-                cover1 = cover_sets(tree_cloud, qsm_input, RS)
-                cover1, Base, Forb = tree_sets(tree_cloud, cover1, qsm_input, segment1)
-                segment1 = segments(cover1, Base, Forb)
-                segment1 = correct_segments(tree_cloud, cover1, segment1, qsm_input,1,1,0)
-                cylinder = cylinders(tree_cloud,cover1,segment1,qsm_input)
-            except Exception as e: 
-                print(f"Failed to get cylinders {e}")
-                continue
-
-
-            cylinder_starts = np.concatenate([cylinder_starts,cylinder["start"]])
-            cylinder_radii = np.append(cylinder_radii,cylinder["radius"])
-            cylinder_axes = np.concatenate([cylinder_axes,cylinder["axis"]])
-            cylinder_lengths = np.append(cylinder_lengths,cylinder["length"])
-            cylinder_branchorders = np.append(
-                cylinder_branchorders,
-                cylinder.get("BranchOrder", np.zeros(len(cylinder["radius"]))))
-
-            # Per-tree QSM attributes (DBH, height, volumes) via TreeQSM's own
-            # branches()/tree_data(); fails soft so one bad tree never aborts.
-            tm = compute_tree_metrics(cylinder, tree_cloud, qsm_input, tree_instance)
             if tm is not None:
                 tree_metrics.append(tm)
 
         cylinder_data = np.concatenate((cylinder_starts, cylinder_radii.reshape(-1, 1), cylinder_axes, cylinder_lengths.reshape(-1, 1), cylinder_branchorders.reshape(-1, 1)), axis=1)
 
         return cylinder_data, tree_metrics
+
+    def get_cylinders_for_tree(self, tree_cloud, tree_instance=0, compute_metrics=True):
+        """Run the production-lite TreeQSM stages for one XYZ tree cloud.
+
+        Returns a compact Cx9 array:
+        [start_xyz, radius, axis_xyz, length, BranchOrder].
+        """
+        tree_cloud = np.asarray(tree_cloud, dtype=float)
+        if tree_cloud.ndim != 2 or tree_cloud.shape[1] < 3:
+            raise ValueError("tree_cloud must be an Nx3 (or wider) array")
+        tree_cloud = tree_cloud[:, :3]
+
+        print(f"Tree {tree_instance}: removing small distant clusters...")
+        tree_cloud = self.noise_remover.remove_distant_small_clusters(tree_cloud)
+        if tree_cloud is None or len(tree_cloud) < 100:
+            return np.empty((0, 9), dtype=float), None
+
+        try:
+            qsm_input = define_input(tree_cloud, 1, 1, 1)[0]
+        except (np.linalg.LinAlgError, IndexError, ValueError) as exc:
+            print(f"Failed to define TreeQSM input: {exc}")
+            return np.empty((0, 9), dtype=float), None
+
+        qsm_input.update(self._qsm_params)
+        qsm_input.update({
+            "disp": 0,
+            "plot": 0,
+            "savemat": 0,
+            "savetxt": 0,
+            "savepdf": 0,
+            "Dist": 0,
+            "Tria": 0,
+        })
+
+        try:
+            cover1 = cover_sets(tree_cloud, qsm_input)
+            cover1, base, forb = tree_sets(tree_cloud, cover1, qsm_input)
+            segment1 = segments(cover1, base, forb, qsm=True)
+            segment1 = correct_segments(tree_cloud, cover1, segment1, qsm_input, 0, 1, 1)
+            relative = relative_size(tree_cloud, cover1, segment1)
+            cover1 = cover_sets(tree_cloud, qsm_input, relative)
+            cover1, base, forb = tree_sets(tree_cloud, cover1, qsm_input, segment1)
+            segment1 = segments(cover1, base, forb)
+            segment1 = correct_segments(tree_cloud, cover1, segment1, qsm_input, 1, 1, 0)
+            cylinder = cylinders(tree_cloud, cover1, segment1, qsm_input)
+        except Exception as exc:
+            print(f"Failed to get cylinders: {exc}")
+            return np.empty((0, 9), dtype=float), None
+
+        count = len(cylinder.get("radius", []))
+        if count == 0:
+            return np.empty((0, 9), dtype=float), None
+
+        cylinder_data = np.column_stack((
+            np.asarray(cylinder["start"])[:count],
+            np.asarray(cylinder["radius"])[:count],
+            np.asarray(cylinder["axis"])[:count],
+            np.asarray(cylinder["length"])[:count],
+            np.asarray(cylinder.get("BranchOrder", np.zeros(count)))[:count],
+        )).astype(float, copy=False)
+
+        # Per-tree attributes fail soft so a metrics issue never drops cylinders.
+        tm = (
+            compute_tree_metrics(cylinder, tree_cloud, qsm_input, tree_instance)
+            if compute_metrics else None
+        )
+        return cylinder_data, tm
 
     def view_cylinders(self, point_cloud, cylinder_data):
         """
