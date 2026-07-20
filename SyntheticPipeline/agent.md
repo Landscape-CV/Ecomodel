@@ -34,7 +34,8 @@ Key learnings, architectural decisions, and physics logic from developing the sy
 ## 5. Ground Truth Pipeline
 
 - **Per-tree GT:** Both generators produce a leafless `_noleaf.obj`. `mesh_to_gt_cylinders.py` fits cylinders to branch geometry and writes per-tree JSON.
-- **Scene GT:** `ForestAssembler` merges transformed per-tree cylinders into `{scene}_gt.json`. `GTParser` flattens to `{scene}_gt.txt` (9 columns per cylinder).
+- **Scene GT:** `ForestAssembler` merges transformed per-tree cylinders into `{scene}_gt.json`. `GTParser` flattens to `{scene}_gt.txt` (10 columns per cylinder, including `branch_id`; legacy files have 9).
+- **GT branch caveat:** `branch_id` is the disconnected mesh-component index, not TreeQSM `BranchOrder`. Do not partition trunk/canopy by `branch_id`; use radius or evaluate the whole skeleton.
 - **Trunk mesh:** `{scene}_gt_mesh.ply` (leafless geometry only) is copied as `{species}_tile_{id}_trunk.ply` for labeling.
 - **Point labels:** `label_gt_points.py` uses Open3D `RaycastingScene.compute_distance` against the trunk mesh. Points within `dist_thresh` (default 5 cm) are wood (1), else leaf (0).
 
@@ -58,6 +59,18 @@ Key learnings, architectural decisions, and physics logic from developing the sy
 - **Caching:** `{tile}_instances.npz` caches preprocessed points so algorithm re-runs skip EcomodelLite.
 - **Outputs:** Append-safe CSV at `--out_csv`, per-tile logs in `output/logs/`, optional `--visualize` PLY layers and `--plot` summary bar chart. `plot_species_performance.py` groups trunk F1 by species from a results CSV.
 
+### QSM Reconstruction Benchmark
+
+- **Three distinct inputs:** `leaf_on` (no separator), `rgi` (production parameters), and `oracle_wood` (GT upper bound). Optional GBSeparation is single-tree/Z-up only.
+- **TreeQSM path:** Use `EcomodelLite.get_cylinders_for_tree()`, which is the production-lite cover-set/segment/cylinder chain. Do not use the monolithic `treeqsm()` wrapper in unattended benchmarks: its default plotting, PDF, distance, and model-output work is expensive and historically blocked runs.
+- **Queue gotcha:** Never send a full TreeQSM model through `multiprocessing.Queue` and call `join()` before reading it. Models include points, cover sets, segments, and plots; a full pipe deadlocks the worker. Return only compact Cx9 cylinders/status.
+- **Resource defaults:** Sequential jobs, 8 cm voxel input, 400k-point cap, 15 GB worker limit, 15-minute backend timeouts, and one BLAS/Numba thread. Only parallelize after measuring peak RSS.
+- **Coordinates:** Benchmark preprocessing normalizes the cloud; translate only cylinder starts back by the stored mean before comparing with world-space GT.
+- **Metrics:** Whole-tree surface precision/recall/F1 and voxel IoU are primary. Radius-based trunk/branch summaries and volume ratios are secondary. Failure/timeout rows are statuses, never zero-quality models.
+- **SmartQSM:** Use `LEAFON` config for foliage and `LEAFOFF` for RGI/oracle inputs. Each tile/condition needs a unique temp directory and subprocess timeout.
+- **AdQSM:** The available test build is GUI-only. Export XYZ + a manifest for manual runs; do not report it as an automated benchmark backend.
+- **Leaf separation inventory:** SegmentRGI is the golden lite-pipeline method; GBSeparation is the geometry-only alternative. Intensity thresholding is only a pre-filter, and SmartQSM cylinder proximity is a post-hoc separation proxy rather than a preprocessing method.
+
 ## 8. Generator-Specific Notes
 
 ### Blender
@@ -79,7 +92,8 @@ Key learnings, architectural decisions, and physics logic from developing the sy
 |-------|------------|
 | OOM during assembly or benchmark KD-tree | Lower ray resolution, increase voxel downsample, reduce `pool_size` / `tiles_per_batch` |
 | Empty asset dir in assembler | Generators must output paired `.obj` + `.json`; assembler skips `*_noleaf.obj` when listing assets |
-| SmartQSM benchmark failures | Verify `--sq_dir`, `--sq_py`, `--sq_cfg`; check `output/logs/{tile}.log` |
+| SmartQSM benchmark failures | Verify the SmartQSM Python plus `--sq-leafon-cfg` / `--sq-leafoff-cfg`; inspect the CSV error/status |
+| TreeQSM reaches timeout | Check point cap/voxel size and worker status; plotting and full-model queue transfer must remain disabled |
 | Missing `lib/arbaro` | Run `python scripts/setup_arbaro.py` and add species XMLs to `lib/arbaro/trees/` |
 | Config not found | Copy `configs/*.example.*` to non-example names; machine-specific paths are gitignored |
 
@@ -92,6 +106,8 @@ SyntheticPipeline/
 │   ├── generate_test_dataset.py
 │   ├── label_gt_points.py
 │   ├── benchmark_separation.py
+│   ├── benchmark_qsm.py
+│   ├── plot_benchmark_qsm.py
 │   └── plot_species_performance.py
 ├── pipeline/                  # asset_manager, forest_assembler, simulator, gt_parser
 ├── generators/                # blender, arbaro, mesh_to_gt_cylinders
