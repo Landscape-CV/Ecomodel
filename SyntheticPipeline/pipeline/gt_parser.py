@@ -35,8 +35,7 @@ class GTParser:
             warnings.warn(f"GT JSON data is empty at {json_path}.")
             return None
             
-        # Expected format: Cx9 array
-        # [start_x, start_y, start_z, radius, axis_x, axis_y, axis_z, length, tree_instance_id]
+        # [start_x, start_y, start_z, radius, axis_x, axis_y, axis_z, length, tree_instance_id, branch_id]
         
         cylinders_array = []
         for cyl in data:
@@ -45,7 +44,8 @@ class GTParser:
                 cyl["radius"],
                 cyl["axis"][0], cyl["axis"][1], cyl["axis"][2],
                 cyl["length"],
-                cyl["tree_instance_id"]
+                cyl["tree_instance_id"],
+                cyl.get("branch_id", -1)
             ]
             cylinders_array.append(row)
             

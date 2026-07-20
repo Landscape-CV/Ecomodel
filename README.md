@@ -130,6 +130,12 @@ pip uninstall spconv-cu121
 pip install spconv-cu128==2.4.1
 ```
 
+### 5. AdQSM Integration
+[AdQSM](https://github.com/GuangpengFan/AdQSM) was integrated into the `thirdparty/AdQSM` directory for structural benchmarking purposes.
+- **Note on Batch Processing:** The standard release of AdQSM (V1.7.5 test version) does **not** provide a native Command-Line Interface (CLI) or batch processing API. It is strictly a GUI application.
+- **Configuration:** We cloned the repository and kept the pre-built Windows executables (`AdQSM-V1.7.5..exe`). To process point clouds using AdQSM, users must manually load their `.xyz` files into the GUI, adjust the Height Segmentation (HS) and Cloud Parameter (CP) parameters (default CP=0.003), and click "Reconstruct". 
+- **Output extraction:** Results are manually saved to `treesparams.csv` and `branchinfo.txt` in the installation path. Due to its manual nature, AdQSM is excluded from our automated multi-tile `benchmark_qsm.py` pipeline, but it is supported as a comparative tool for single-tree manual analysis.
+
 ### Contributing Fixes
 
 You may create a fork of our repository to submit a pull request. Your request will be reviewed and if approved will be incorporated. For best chances at approval, attach to an existing issue or create your own to resolve. 

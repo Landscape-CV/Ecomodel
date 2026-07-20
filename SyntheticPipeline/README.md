@@ -63,7 +63,9 @@ plot_species_performance.py  →  per-species comparison charts
 - `generate_test_dataset.py` — Builds per-species single-tree benchmark tiles
 - `label_gt_points.py` — Labels scan points as wood (1) or leaf (0) from trunk mesh distance
 - `benchmark_separation.py` — Runs separation algorithms and writes metrics CSV
+- `benchmark_qsm.py` — Compares TreeQSM and SmartQSM under leaf-on, RGI, and oracle inputs
 - `plot_species_performance.py` — Bar charts of trunk metrics grouped by species
+- `plot_benchmark_qsm.py` — Plots successful QSM benchmark rows
 
 ### `evaluation/`
 
@@ -177,11 +179,11 @@ Each tile in `testdataset/single/` uses the prefix `{species}_tile_{id}`:
 |------|-------------|
 | `*_scan.laz` | Simulated TLS point cloud with intensity |
 | `*_trunk.ply` | Leafless trunk/branch mesh for labeling |
-| `*_gt.json` / `*_gt.txt` | Scene cylinder skeleton (9 columns per row) |
+| `*_gt.json` / `*_gt.txt` | Scene cylinder skeleton (10 columns per row) |
 | `*_meta.json` | Scan positions, noise params, tile metadata |
 | `*_labels.npy` | Binary wood/leaf labels (created by `label_gt_points.py`) |
 
-GT cylinder format: `[start_x, start_y, start_z, radius, axis_x, axis_y, axis_z, length, tree_instance_id]`.
+Current GT cylinder format: `[start_x, start_y, start_z, radius, axis_x, axis_y, axis_z, length, tree_instance_id, branch_id]`. The benchmark also accepts legacy 9-column files. `branch_id` is a mesh-component identifier, not topological branch order.
 
 ## Generator Configuration
 
@@ -232,6 +234,56 @@ Notable Arbaro XML parameters: `Scale`, `ScaleV`, `BaseSize`, `Ratio`, `RatioPow
 Preprocessing mirrors `pipeline_lite.py`: normalize → CSF ground removal → intensity filter. For single-tree leafy tiles, instance segmentation is bypassed (all points assigned to one tree) because `SegmenterScanline` is tuned for wood-only skeletons.
 
 Per-tile logs are written to `output/logs/`. Instance caches (`*_instances.npz`) speed up re-runs.
+
+## QSM Reconstruction Benchmark
+
+`benchmark_qsm.py` measures downstream reconstruction quality, separately from wood/leaf classification quality. Every synthetic single-tree tile uses the same production preprocessing (normalization, CSF ground removal, and intensity filtering), followed by:
+
+- `leaf_on` — no leaf separation
+- `rgi` — production `EcomodelLite` SegmentRGI parameters
+- `oracle_wood` — synthetic GT labels; an upper bound, not a deployable method
+- `gbseparation` — optional geometry-only separator (`--include-gbseparation`)
+
+TreeQSM uses the same cover-set → segmentation → cylinder path as `gui/pipeline_lite.py`. SmartQSM uses its recommended `LEAFON` config for leaf-on points and `LEAFOFF` config for separated/oracle points.
+
+For a conservative run below 16 GB:
+
+```bash
+python scripts/benchmark_qsm.py \
+  --dataset-dir testdataset/single \
+  --sample-n 3 \
+  --qsm-voxel-size 0.08 \
+  --max-points 400000 \
+  --memory-limit-gb 15 \
+  --treeqsm-timeout 900 \
+  --smartqsm-timeout 900
+```
+
+Defaults are sequential: do not run multiple full TreeQSM/SmartQSM jobs concurrently on a 16 GB machine. Each worker is thread-pinned, TreeQSM plots and distance reports are disabled, and memory/time limit failures are recorded as statuses rather than zero scores.
+
+Primary metrics are whole-tree distance-tolerance precision/recall/F1, voxel IoU, and volume ratio. Optional trunk/branch summaries use a radius threshold because synthetic `branch_id` does not encode branch order. Runs resume at `(file, condition, algorithm, config)` granularity.
+
+Useful options:
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--preprocess-voxel-size` | `0` | Optional pre-RGI downsample; changes density-sensitive RGI behavior |
+| `--qsm-voxel-size` | `0.08` | Input downsampling before QSM |
+| `--max-points` | `400000` | Deterministic cap per condition |
+| `--num-workers` | `1` | Tile workers; explicitly limited to 1 or 2 |
+| `--distance-tolerance` | `0.05` | Surface matching tolerance (m) |
+| `--metric-voxel-size` | `0.10` | Voxel IoU resolution (m) |
+| `--trunk-radius-threshold` | `0.05` | Radius split for optional summaries |
+| `--sq-leafon-cfg` / `--sq-leafoff-cfg` | spconv LEAFON / space-colonization | Condition-specific SmartQSM settings; override for CPU/GPU availability |
+| `--export-adqsm` | off | Export condition-specific XYZ + manifest for manual AdQSM runs |
+
+AdQSM's available test build is GUI-only and cannot be included in an unattended timed benchmark. `--export-adqsm` creates reproducible inputs and parameter metadata; its outputs must be run and imported manually.
+
+Plot completed rows:
+
+```bash
+python scripts/plot_benchmark_qsm.py
+```
 
 ## Testing
 
