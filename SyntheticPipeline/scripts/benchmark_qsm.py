@@ -1,8 +1,22 @@
 """Benchmark QSM reconstruction under leaf-on, separated, and oracle inputs.
 
-The default execution is deliberately sequential and resource constrained.  Synthetic
-tiles contain one known tree, so instance segmentation is bypassed to isolate the
-effect of foliage on each QSM backend.
+Primary score: high-res wood model → low-poly cylinder abstraction fidelity.
+
+  Precision  = fraction of QSM surface samples within --distance-tolerance of
+               the dense wood target (*_trunk.ply*, else labeled wood points).
+  Recall     = fraction of the coarse wood target (voxel size
+               --abstraction-target-voxel) within tolerance of any cylinder
+               surface. The coarse target is a proxy for structure an optimal
+               low-poly model should keep.
+  Distances  = mean / median / P90 wood→cylinder distance on the coarse target.
+  F1 / IoU   = derived from precision and recall.
+
+Secondary CylGT_* / Trunk_* / Branch_* scores compare against weak mesh-OBB
+cylinder GT and are optional diagnostics only.
+
+The default execution is sequential and resource constrained. Synthetic tiles
+contain one known tree, so instance segmentation is bypassed to isolate foliage
+effects on each QSM backend.
 """
 
 from __future__ import annotations
@@ -43,11 +57,16 @@ RESULT_COLUMNS = [
     "Algorithm", "Condition", "Species", "File", "Status", "Error",
     "InputPoints", "PreprocessTime_s", "ExecTime_s", "PeakRSS_GB",
     "Seed", "PreprocessVoxelSize_m", "VoxelSize_m", "MetricVoxelSize_m",
-    "DistanceTolerance_m", "Config",
-    "CylinderCount", "Whole_Precision", "Whole_Recall", "Whole_F1",
-    "Whole_IoU", "Whole_VolRatio", "Trunk_Precision", "Trunk_Recall",
-    "Trunk_F1", "Trunk_IoU", "Trunk_VolRatio", "Branch_Precision",
-    "Branch_Recall", "Branch_F1", "Branch_IoU", "Branch_VolRatio",
+    "DistanceTolerance_m", "MetricTarget", "Config",
+    "CylinderCount",
+    # Primary: high-res wood model vs low-poly QSM abstraction.
+    "Whole_Precision", "Whole_Recall", "Whole_F1", "Whole_IoU",
+    "Whole_MeanDist_m", "Whole_MedianDist_m", "Whole_P90Dist_m",
+    "Whole_VolRatio",
+    # Optional secondary: weak mesh-OBB cylinder GT (not the main score).
+    "CylGT_Precision", "CylGT_Recall", "CylGT_F1",
+    "Trunk_Precision", "Trunk_Recall", "Trunk_F1", "Trunk_IoU", "Trunk_VolRatio",
+    "Branch_Precision", "Branch_Recall", "Branch_F1", "Branch_IoU", "Branch_VolRatio",
 ]
 
 
@@ -128,6 +147,82 @@ def distance_metrics(gt_pts, pred_pts, tolerance):
 def get_cylinder_volume(cylinders):
     cylinders = np.asarray(cylinders)
     return float(np.sum(np.pi * cylinders[:, 3] ** 2 * cylinders[:, 7])) if cylinders.size else 0.0
+
+
+def point_to_cylinder_distances(points, cylinders, batch_size=2500):
+    """Unsigned distance from each point to the nearest finite cylinder surface."""
+    points = np.asarray(points, dtype=float)
+    cylinders = np.atleast_2d(np.asarray(cylinders, dtype=float))
+    if len(points) == 0:
+        return np.zeros(0, dtype=float)
+    if cylinders.size == 0:
+        return np.full(len(points), np.inf, dtype=float)
+
+    starts = cylinders[:, :3]
+    radii = cylinders[:, 3]
+    axes = cylinders[:, 4:7]
+    lengths = cylinders[:, 7]
+    norms = np.linalg.norm(axes, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    axes = axes / norms
+    lengths = np.maximum(lengths, 0.0)
+
+    min_dist = np.full(len(points), np.inf, dtype=float)
+    for start_idx in range(0, len(points), batch_size):
+        batch = points[start_idx : start_idx + batch_size]
+        # (B, C, 3)
+        delta = batch[:, None, :] - starts[None, :, :]
+        t = np.sum(delta * axes[None, :, :], axis=2)
+        t = np.clip(t, 0.0, lengths[None, :])
+        closest = starts[None, :, :] + t[:, :, None] * axes[None, :, :]
+        radial = np.linalg.norm(batch[:, None, :] - closest, axis=2)
+        dist = np.abs(radial - radii[None, :])
+        min_dist[start_idx : start_idx + len(batch)] = dist.min(axis=1)
+    return min_dist
+
+
+def load_hires_wood_points(base_name, labels, max_samples, rng, target_voxel_size=0.0):
+    """High-res wood target: leafless trunk mesh, else labeled LAZ wood points.
+
+    When ``target_voxel_size`` > 0, the surface is voxel-downsampled to that scale
+    so the benchmark asks: how close is the QSM to an optimal low-poly fit at the
+    same representational resolution, rather than punishing every hair-thin twig.
+    """
+    trunk_path = base_name + "_trunk.ply"
+    if os.path.exists(trunk_path):
+        import open3d as o3d
+
+        mesh = o3d.io.read_triangle_mesh(trunk_path)
+        if mesh.has_triangles() and len(mesh.triangles) > 0:
+            n = int(min(max(max_samples * 4, 5000), max(2000, len(mesh.triangles) * 4)))
+            pcd = mesh.sample_points_uniformly(number_of_points=n)
+            pts = np.asarray(pcd.points, dtype=float)
+            source = "trunk_mesh"
+            if len(pts):
+                if target_voxel_size and target_voxel_size > 0:
+                    keys = np.floor(pts / target_voxel_size).astype(np.int64)
+                    _, indices = np.unique(keys, axis=0, return_index=True)
+                    pts = pts[np.sort(indices)]
+                    source = f"trunk_mesh_voxel_{target_voxel_size:g}m"
+                if len(pts) > max_samples:
+                    pts = pts[np.sort(rng.choice(len(pts), max_samples, replace=False))]
+                return pts, source
+
+    laz_path = base_name + "_scan.laz"
+    las = laspy.read(laz_path)
+    xyz = np.column_stack((las.x, las.y, las.z)).astype(float)
+    if len(labels) != len(xyz):
+        raise ValueError("Label/point count mismatch while loading wood target")
+    wood = xyz[labels == 1]
+    source = "oracle_laz_points"
+    if target_voxel_size and target_voxel_size > 0 and len(wood):
+        keys = np.floor(wood / target_voxel_size).astype(np.int64)
+        _, indices = np.unique(keys, axis=0, return_index=True)
+        wood = wood[np.sort(indices)]
+        source = f"oracle_laz_voxel_{target_voxel_size:g}m"
+    if len(wood) > max_samples:
+        wood = wood[np.sort(rng.choice(len(wood), max_samples, replace=False))]
+    return wood, source
 
 
 def _treeqsm_worker(result_queue, points, model_kwargs):
@@ -284,7 +379,70 @@ def _metric_block(gt_cyls, pred_cyls, rng, args):
             if get_cylinder_volume(gt_cyls) > 0 else 0.0)
 
 
+def evaluate_abstraction_vs_hires(hires_pts, pred_cyls, seed, args, coarse_pts=None):
+    """Score low-poly cylinders against a high-res wood surface/point model.
+
+    Precision uses the dense high-res wood: fraction of QSM surface that stays
+    near true wood (abstraction must not invent geometry).
+
+    Recall uses an optional coarsened wood target (proxy for structure a low-poly
+    model should keep). If ``coarse_pts`` is None, recall uses ``hires_pts``.
+
+    Distances are wood→model on the recall target (closeness to an optimal
+    low-poly support).
+    """
+    rng = np.random.default_rng(seed)
+    hires_pts = np.asarray(hires_pts, dtype=float)
+    recall_pts = np.asarray(coarse_pts if coarse_pts is not None else hires_pts, dtype=float)
+    pred_cyls = np.atleast_2d(np.asarray(pred_cyls, dtype=float))
+    empty = {
+        "Whole_Precision": 0.0,
+        "Whole_Recall": 0.0,
+        "Whole_F1": 0.0,
+        "Whole_IoU": 0.0,
+        "Whole_MeanDist_m": np.inf,
+        "Whole_MedianDist_m": np.inf,
+        "Whole_P90Dist_m": np.inf,
+        "Whole_VolRatio": 0.0,
+    }
+    if len(hires_pts) == 0 or pred_cyls.size == 0 or len(recall_pts) == 0:
+        return empty
+
+    if len(hires_pts) > args.surface_samples:
+        hires_pts = hires_pts[
+            np.sort(rng.choice(len(hires_pts), args.surface_samples, replace=False))
+        ]
+    if len(recall_pts) > args.surface_samples:
+        recall_pts = recall_pts[
+            np.sort(rng.choice(len(recall_pts), args.surface_samples, replace=False))
+        ]
+
+    wood_to_model = point_to_cylinder_distances(recall_pts, pred_cyls)
+    recall = float(np.mean(wood_to_model <= args.distance_tolerance))
+
+    pred_surface = sample_cylinders(pred_cyls, args.surface_samples, rng)
+    if len(pred_surface) == 0:
+        precision = 0.0
+    else:
+        surface_to_wood = cKDTree(hires_pts).query(pred_surface, workers=1)[0]
+        precision = float(np.mean(surface_to_wood <= args.distance_tolerance))
+
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    iou = f1 / (2.0 - f1) if f1 < 2.0 else 1.0
+    return {
+        "Whole_Precision": precision,
+        "Whole_Recall": recall,
+        "Whole_F1": f1,
+        "Whole_IoU": iou,
+        "Whole_MeanDist_m": float(np.mean(wood_to_model)),
+        "Whole_MedianDist_m": float(np.median(wood_to_model)),
+        "Whole_P90Dist_m": float(np.percentile(wood_to_model, 90)),
+        "Whole_VolRatio": 0.0,
+    }
+
+
 def evaluate_cylinders(gt_cyls, pred_cyls, seed, args):
+    """Legacy cylinder-vs-cylinder scores retained as secondary diagnostics."""
     rng = np.random.default_rng(seed)
     whole = _metric_block(gt_cyls, pred_cyls, rng, args)
     gt_trunk = gt_cyls[gt_cyls[:, 3] >= args.trunk_radius_threshold]
@@ -293,9 +451,13 @@ def evaluate_cylinders(gt_cyls, pred_cyls, seed, args):
     pred_branch = pred_cyls[pred_cyls[:, 3] < args.trunk_radius_threshold]
     trunk = _metric_block(gt_trunk, pred_trunk, rng, args)
     branch = _metric_block(gt_branch, pred_branch, rng, args)
+    metrics = {
+        "CylGT_Precision": whole[0],
+        "CylGT_Recall": whole[1],
+        "CylGT_F1": whole[2],
+    }
     names = ("Precision", "Recall", "F1", "IoU", "VolRatio")
-    metrics = {}
-    for prefix, values in (("Whole", whole), ("Trunk", trunk), ("Branch", branch)):
+    for prefix, values in (("Trunk", trunk), ("Branch", branch)):
         metrics.update({f"{prefix}_{name}": value for name, value in zip(names, values)})
     return metrics
 
@@ -337,9 +499,15 @@ def _base_result(tile_path, condition, algorithm, config, input_count, prep_time
         "VoxelSize_m": args.qsm_voxel_size,
         "MetricVoxelSize_m": args.metric_voxel_size,
         "DistanceTolerance_m": args.distance_tolerance,
+        "MetricTarget": "hires_wood_abstraction",
         "Config": config,
         "CylinderCount": 0,
     }
+
+
+def _cylinder_cache_path(args, tile_path, condition, algorithm):
+    stem = Path(tile_path).name.removesuffix("_scan.laz")
+    return Path(args.out_dir) / "cylinders" / f"{stem}__{condition}__{algorithm}.npy"
 
 
 def benchmark_tile(tile_path, args, completed=None):
@@ -354,6 +522,23 @@ def benchmark_tile(tile_path, args, completed=None):
 
     tile_seed = args.seed + sum(os.path.basename(tile_path).encode("utf-8"))
     rng = np.random.default_rng(tile_seed)
+    # Dense wood for precision; optional coarsened support for recall / distances.
+    dense_pts, dense_source = load_hires_wood_points(
+        base_name, labels, args.surface_samples, rng, target_voxel_size=0.0
+    )
+    if args.abstraction_target_voxel and args.abstraction_target_voxel > 0:
+        coarse_pts, coarse_source = load_hires_wood_points(
+            base_name,
+            labels,
+            args.surface_samples,
+            rng,
+            target_voxel_size=args.abstraction_target_voxel,
+        )
+        hires_source = f"{dense_source}+recall:{coarse_source}"
+    else:
+        coarse_pts = None
+        hires_source = dense_source
+    hires_pts = dense_pts
     conditions, mean, prep_time = prepare_conditions(tile_path, labels, args, rng)
     rows = []
 
@@ -419,10 +604,18 @@ def benchmark_tile(tile_path, args, completed=None):
                 continue
 
             row.update(Status=status, Error=error, ExecTime_s=elapsed, PeakRSS_GB=peak,
-                       CylinderCount=len(cylinders))
+                       CylinderCount=len(cylinders),
+                       MetricTarget=f"hires_wood_abstraction:{hires_source}")
             if status == "ok" and len(cylinders):
                 world_cylinders = _world_cylinders(cylinders, mean)
-                row.update(evaluate_cylinders(gt_cyls, world_cylinders, row_seed, args))
+                cache_path = _cylinder_cache_path(args, tile_path, condition, algorithm)
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                np.save(cache_path, world_cylinders)
+                row.update(evaluate_abstraction_vs_hires(
+                    hires_pts, world_cylinders, row_seed, args, coarse_pts=coarse_pts
+                ))
+                if args.keep_cyl_gt_metrics:
+                    row.update(evaluate_cylinders(gt_cyls, world_cylinders, row_seed, args))
             rows.append(row)
 
     if args.export_adqsm:
@@ -471,12 +664,28 @@ def build_parser():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--include-gbseparation", action="store_true")
     parser.add_argument("--export-adqsm", action="store_true")
+    parser.add_argument(
+        "--keep-cyl-gt-metrics",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Also write secondary mesh-OBB cylinder-GT scores (CylGT_*/Trunk_*/Branch_*).",
+    )
     parser.add_argument("--intensity-threshold", type=float, default=0.0)
     parser.add_argument("--preprocess-voxel-size", type=float, default=0.0)
     parser.add_argument("--qsm-voxel-size", type=float, default=0.08)
     parser.add_argument("--max-points", type=int, default=400_000)
     parser.add_argument("--surface-samples", type=int, default=50_000)
     parser.add_argument("--distance-tolerance", type=float, default=0.05)
+    parser.add_argument(
+        "--abstraction-target-voxel",
+        type=float,
+        default=0.08,
+        help=(
+            "Voxel size (m) for the recall/distance wood target (proxy for optimal "
+            "low-poly support). Precision still uses the dense high-res surface. "
+            "Set 0 to use dense wood for recall as well."
+        ),
+    )
     parser.add_argument("--metric-voxel-size", type=float, default=0.10)
     parser.add_argument("--trunk-radius-threshold", type=float, default=0.05)
     parser.add_argument("--treeqsm-timeout", type=float, default=900)

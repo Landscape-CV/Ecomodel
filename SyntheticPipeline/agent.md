@@ -65,8 +65,17 @@ Key learnings, architectural decisions, and physics logic from developing the sy
 - **TreeQSM path:** Use `EcomodelLite.get_cylinders_for_tree()`, which is the production-lite cover-set/segment/cylinder chain. Do not use the monolithic `treeqsm()` wrapper in unattended benchmarks: its default plotting, PDF, distance, and model-output work is expensive and historically blocked runs.
 - **Queue gotcha:** Never send a full TreeQSM model through `multiprocessing.Queue` and call `join()` before reading it. Models include points, cover sets, segments, and plots; a full pipe deadlocks the worker. Return only compact Cx9 cylinders/status.
 - **Resource defaults:** Sequential jobs, 8 cm voxel input, 400k-point cap, 15 GB worker limit, 15-minute backend timeouts, and one BLAS/Numba thread. Only parallelize after measuring peak RSS.
-- **Coordinates:** Benchmark preprocessing normalizes the cloud; translate only cylinder starts back by the stored mean before comparing with world-space GT.
-- **Metrics:** Whole-tree surface precision/recall/F1 and voxel IoU are primary. Radius-based trunk/branch summaries and volume ratios are secondary. Failure/timeout rows are statuses, never zero-quality models.
+- **Coordinates:** Benchmark preprocessing normalizes the cloud; translate only cylinder starts back by the stored mean before comparing with world-space wood targets.
+- **Metrics (primary) — high-res → low-poly abstraction:**
+  - Dense wood \(W\): `*_trunk.ply` samples (else labeled LAZ wood).
+  - Coarse wood \(W_c\): \(W\) voxel-downsampled at `--abstraction-target-voxel` (default 0.08 m); proxy for optimal low-poly support.
+  - Precision: fraction of QSM lateral-surface samples within `--distance-tolerance` (default 0.05 m) of dense \(W\) (no invented geometry).
+  - Recall: fraction of \(W_c\) within tolerance of any predicted cylinder surface.
+  - `Whole_MeanDist_m` / `Median` / `P90`: wood→model distances on \(W_c\) (closeness to that low-poly support).
+  - F1 / IoU from precision+recall. `MetricTarget` names the wood sources used.
+  - All input conditions share this scorer; only the QSM input cloud changes.
+- **Metrics (secondary):** Weak mesh-OBB cylinder GT (`CylGT_*`) plus optional radius-based trunk/branch summaries. Do not treat these as the wood-only score (`--no-keep-cyl-gt-metrics` to skip).
+- **Caches:** World-space cylinders are saved under `out_dir/cylinders/` for re-scoring without re-running QSM.
 - **SmartQSM:** Use `LEAFON` config for foliage and `LEAFOFF` for RGI/oracle inputs. Each tile/condition needs a unique temp directory and subprocess timeout.
 - **AdQSM:** The available test build is GUI-only. Export XYZ + a manifest for manual runs; do not report it as an automated benchmark backend.
 - **Leaf separation inventory:** SegmentRGI is the golden lite-pipeline method; GBSeparation is the geometry-only alternative. Intensity thresholding is only a pre-filter, and SmartQSM cylinder proximity is a post-hoc separation proxy rather than a preprocessing method.

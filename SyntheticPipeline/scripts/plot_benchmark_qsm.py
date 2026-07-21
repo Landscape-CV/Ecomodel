@@ -1,10 +1,11 @@
 """Plot successful QSM benchmark rows to PNGs (non-interactive).
 
 Always writes:
-  1) F1 / IoU overview (--out)
+  1) F1 / distance overview (--out)
   2) Precision / Recall comparison (*_precision_recall.png)
   3) Algorithm x condition summary (*_by_condition.png)
 
+Primary scores are high-res wood → low-poly cylinder abstraction fidelity.
 Leaf-on / Leaf-off / Wood-only share one hue family with light→dark tints.
 TreeQSM and SmartQSM are faceted so condition groups stay readable.
 """
@@ -49,8 +50,8 @@ CONDITION_EXPLANATIONS = {
         "EcomodelLite / pipeline_lite parameters (intensity + region growing)."
     ),
     "oracle_wood": (
-        "Wood-only (oracle): synthetic GT labels from distance to the leafless "
-        "trunk mesh (*_labels.npy == 1). Upper bound, not a deployable method."
+        "Wood-only (oracle): QSM built from GT wood labels; still scored as a "
+        "low-poly abstraction of the high-res trunk mesh / wood surface."
     ),
     "gbseparation": (
         "Leaf-off (GBSeparation): optional geometry-based separator "
@@ -72,8 +73,8 @@ def _sibling_out_path(out_path: str, suffix: str) -> str:
     return f"{root}_{suffix}{ext or '.png'}"
 
 
-def _y_limit(values, pad_ratio: float = 0.12) -> float:
-    """Scale bars to the data while keeping a readable floor for tiny scores."""
+def _y_limit(values, pad_ratio: float = 0.12, *, metric: str | None = None) -> float:
+    """Scale bars to the data; 0-1 scores stay capped, distances do not."""
     finite = np.asarray(values, dtype=float)
     finite = finite[np.isfinite(finite)]
     if finite.size == 0:
@@ -81,8 +82,11 @@ def _y_limit(values, pad_ratio: float = 0.12) -> float:
     peak = float(np.nanmax(finite))
     if peak <= 0:
         return 0.1
-    # Keep some headroom for bar labels; never force a full 0-1 axis.
     padded = peak * (1.0 + pad_ratio)
+    is_distance = bool(metric and ("Dist" in metric or metric.endswith("_m")))
+    if is_distance:
+        return max(padded, peak + 0.05)
+    # Keep some headroom for bar labels; never force a full 0-1 axis for tiny scores.
     if peak < 0.05:
         return max(padded, 0.05)
     if peak < 0.2:
@@ -140,8 +144,9 @@ def _add_input_legend(fig: plt.Figure, conditions: list[str], palette: dict[str,
     for condition in conditions:
         lines.append(f"• {CONDITION_EXPLANATIONS.get(condition, condition)}")
     lines.append(
-        "Panels split QSM methods. Within each panel, bars for one species are "
-        "Leaf-on / Leaf-off / Wood-only side by side."
+        "Primary score: high-res wood model vs low-poly QSM cylinders "
+        "(abstraction fidelity). Panels split QSM methods; within each panel, "
+        "bars for one species are Leaf-on / Leaf-off / Wood-only side by side."
     )
     text = "\n".join(textwrap.fill(line, width=110) for line in lines)
     fig.text(
@@ -209,7 +214,7 @@ def _save_faceted_metrics(
             else:
                 ax.set_ylabel("")
             ax.set_xlabel("")
-            ax.set_ylim(0, _y_limit(subset[metric]))
+            ax.set_ylim(0, _y_limit(subset[metric], metric=metric))
             ax.tick_params(axis="x", rotation=35, labelsize=8)
             for label in ax.get_xticklabels():
                 label.set_ha("right")
@@ -220,7 +225,7 @@ def _save_faceted_metrics(
                 legend.remove()
 
         # Shared y-scale per metric row so TreeQSM/SmartQSM stay comparable.
-        row_max = _y_limit(df[metric])
+        row_max = _y_limit(df[metric], metric=metric)
         for col in range(n_algos):
             axes[row][col].set_ylim(0, row_max)
 
@@ -269,8 +274,8 @@ def _save_condition_summary(
         )
         ax.set_title(titles.get(metric, metric), fontsize=12)
         ax.set_xlabel("")
-        ax.set_ylabel("Score")
-        ax.set_ylim(0, _y_limit(summary[metric]))
+        ax.set_ylabel("Distance (m)" if "Dist" in metric or metric.endswith("_m") else "Score")
+        ax.set_ylim(0, _y_limit(summary[metric], metric=metric))
         for container in ax.containers:
             ax.bar_label(container, fmt="%.2f", padding=2, fontsize=8)
         legend = ax.get_legend()
@@ -318,16 +323,30 @@ def main():
     if "CylinderCount" in df.columns:
         df = df[df["CylinderCount"].fillna(0) > 0]
 
-    overview_metrics = ["Whole_F1", "Whole_IoU", "Trunk_F1", "Branch_F1"]
-    pr_metrics = [
-        "Whole_Precision",
-        "Whole_Recall",
-        "Trunk_Precision",
-        "Trunk_Recall",
-        "Branch_Precision",
-        "Branch_Recall",
+    overview_metrics = [
+        m for m in ["Whole_F1", "Whole_IoU", "Whole_MedianDist_m", "Whole_P90Dist_m"]
+        if m in df.columns
     ]
-    needed = overview_metrics + pr_metrics
+    if "Whole_F1" not in overview_metrics:
+        print("CSV is missing Whole_F1.", file=sys.stderr)
+        return 1
+    # Fall back to secondary trunk/branch when present (older CSVs).
+    for optional in ("Trunk_F1", "Branch_F1"):
+        if optional in df.columns and df[optional].notna().any():
+            overview_metrics.append(optional)
+
+    pr_metrics = [
+        m for m in [
+            "Whole_Precision",
+            "Whole_Recall",
+            "Trunk_Precision",
+            "Trunk_Recall",
+            "Branch_Precision",
+            "Branch_Recall",
+        ]
+        if m in df.columns and (m.startswith("Whole_") or df[m].notna().any())
+    ]
+    needed = [m for m in overview_metrics + pr_metrics if m.startswith("Whole_")]
     missing = [m for m in needed if m not in df.columns]
     if missing:
         print(f"CSV is missing metric columns: {missing}", file=sys.stderr)
@@ -343,20 +362,31 @@ def main():
     df["Input"] = df["Condition"].map(lambda c: CONDITION_LABELS.get(c, c))
 
     print(f"Plotting {len(df)} rows...")
+    plot_cols = list(dict.fromkeys(overview_metrics + pr_metrics))
     species_df = (
-        df.groupby(["Species", "Algorithm", "Input", "Condition"], as_index=False)[needed]
+        df.groupby(["Species", "Algorithm", "Input", "Condition"], as_index=False)[plot_cols]
         .mean(numeric_only=True)
     )
+
+    titles = {
+        "Whole_F1": "Abstraction F1 (hi-res wood ↔ cylinders)",
+        "Whole_IoU": "Abstraction IoU",
+        "Whole_MedianDist_m": "Median wood→model distance (m)",
+        "Whole_P90Dist_m": "P90 wood→model distance (m)",
+        "Trunk_F1": "Trunk F1 (secondary CylGT)",
+        "Branch_F1": "Branch F1 (secondary CylGT)",
+        "Whole_Precision": "Abstraction precision",
+        "Whole_Recall": "Abstraction recall",
+        "Trunk_Precision": "Trunk Precision (CylGT)",
+        "Trunk_Recall": "Trunk Recall (CylGT)",
+        "Branch_Precision": "Branch Precision (CylGT)",
+        "Branch_Recall": "Branch Recall (CylGT)",
+    }
 
     _save_faceted_metrics(
         species_df,
         overview_metrics,
-        {
-            "Whole_F1": "Whole-tree F1",
-            "Whole_IoU": "Whole-tree IoU",
-            "Trunk_F1": "Trunk F1",
-            "Branch_F1": "Branch F1",
-        },
+        titles,
         args.out,
         condition_order=condition_order,
     )
@@ -364,29 +394,19 @@ def main():
     _save_faceted_metrics(
         species_df,
         pr_metrics,
-        {
-            "Whole_Precision": "Whole Precision",
-            "Whole_Recall": "Whole Recall",
-            "Trunk_Precision": "Trunk Precision",
-            "Trunk_Recall": "Trunk Recall",
-            "Branch_Precision": "Branch Precision",
-            "Branch_Recall": "Branch Recall",
-        },
+        titles,
         _sibling_out_path(args.out, "precision_recall"),
         condition_order=condition_order,
     )
 
+    summary_metrics = [
+        m for m in overview_metrics + ["Whole_Precision", "Whole_Recall"]
+        if m in species_df.columns
+    ]
     _save_condition_summary(
         species_df,
-        overview_metrics + ["Whole_Precision", "Whole_Recall"],
-        {
-            "Whole_F1": "Whole-tree F1 (species-averaged)",
-            "Whole_IoU": "Whole-tree IoU (species-averaged)",
-            "Trunk_F1": "Trunk F1 (species-averaged)",
-            "Branch_F1": "Branch F1 (species-averaged)",
-            "Whole_Precision": "Whole Precision (species-averaged)",
-            "Whole_Recall": "Whole Recall (species-averaged)",
-        },
+        summary_metrics,
+        {k: f"{v} (species-averaged)" for k, v in titles.items()},
         _sibling_out_path(args.out, "by_condition"),
         condition_order=condition_order,
     )

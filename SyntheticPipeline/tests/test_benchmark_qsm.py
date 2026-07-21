@@ -16,7 +16,9 @@ from benchmark_qsm import (
     _sleep_worker,
     _world_cylinders,
     calculate_metrics,
+    evaluate_abstraction_vs_hires,
     load_gt_cylinders,
+    point_to_cylinder_distances,
     run_treeqsm,
     sample_cylinders,
 )
@@ -86,3 +88,38 @@ def test_worker_timeout_returns_without_waiting_for_probe():
     )
     assert status == "timeout"
     assert __import__("time").time() - started < 5.0
+
+
+def test_point_to_cylinder_distance_is_zero_on_surface():
+    cylinder = _cylinder_row()
+    surface = sample_cylinders(cylinder, 64, np.random.default_rng(1))
+    dist = point_to_cylinder_distances(surface, cylinder)
+    assert float(np.max(dist)) < 1e-6
+
+
+def test_abstraction_vs_hires_is_near_perfect_for_identical_geometry():
+    class Args:
+        surface_samples = 2000
+        distance_tolerance = 0.05
+
+    cylinder = _cylinder_row()
+    hires = sample_cylinders(cylinder, 2000, np.random.default_rng(2))
+    metrics = evaluate_abstraction_vs_hires(hires, cylinder, seed=3, args=Args())
+    assert metrics["Whole_Precision"] > 0.99
+    assert metrics["Whole_Recall"] > 0.99
+    assert metrics["Whole_F1"] > 0.99
+    assert metrics["Whole_MedianDist_m"] < 1e-3
+
+
+def test_abstraction_penalizes_offset_cylinders():
+    class Args:
+        surface_samples = 2000
+        distance_tolerance = 0.05
+
+    cylinder = _cylinder_row()
+    hires = sample_cylinders(cylinder, 2000, np.random.default_rng(4))
+    offset = cylinder.copy()
+    offset[0, 0] += 0.5
+    metrics = evaluate_abstraction_vs_hires(hires, offset, seed=5, args=Args())
+    assert metrics["Whole_F1"] < 0.2
+    assert metrics["Whole_MedianDist_m"] > 0.2
