@@ -259,9 +259,46 @@ python scripts/benchmark_qsm.py \
   --smartqsm-timeout 900
 ```
 
+### Metric definition (primary): high-res → low-poly abstraction
+
+The primary question is: **given a high-resolution wood model, how close is the QSM to an optimal low-poly cylinder abstraction?**
+
+All conditions (`leaf_on`, `rgi`, `oracle_wood`, …) are scored the same way. The condition only changes the **input cloud** used to build the QSM; the reference wood target is always the leafless high-res model.
+
+**Reference targets**
+
+| Symbol | Source | Role |
+|--------|--------|------|
+| Dense wood \(W\) | `*_trunk.ply` surface samples (fallback: labeled LAZ wood points) | True high-res wood surface |
+| Coarse wood \(W_c\) | \(W\) voxel-downsampled at `--abstraction-target-voxel` (default **0.08 m**) | Proxy for structure a low-poly model should keep |
+| Predicted cylinders \(C\) | TreeQSM / SmartQSM output, starts translated back to world coordinates | Low-poly abstraction |
+| Cylinder surface samples \(S\) | Lateral surfaces of \(C\), area-weighted (`--surface-samples`) | Discrete QSM surface |
+
+**Distance**
+
+For a point \(p\) and cylinder set \(C\), \(d(p, C)\) is the unsigned distance to the nearest finite cylinder **surface** (axis segment clipped to cylinder length; radial distance \(|r_{\mathrm{point}} - r_{\mathrm{cyl}}|\)).
+
+**Primary scores** (tolerance \(\tau =\) `--distance-tolerance`, default **0.05 m**)
+
+| Column | Definition | Interpretation |
+|--------|------------|----------------|
+| `Whole_Precision` | \(\lvert\{ s \in S : d(s, W) \le \tau \}\rvert / \lvert S\rvert\) | Fraction of QSM surface that stays near true wood (**does not invent** geometry) |
+| `Whole_Recall` | \(\lvert\{ w \in W_c : d(w, C) \le \tau \}\rvert / \lvert W_c\rvert\) | Fraction of the **coarse** wood support covered by cylinders |
+| `Whole_F1` | Harmonic mean of precision and recall | Overall abstraction fidelity |
+| `Whole_IoU` | \(F1 / (2 - F1)\) | F1 rewritten as an IoU-like score |
+| `Whole_MeanDist_m` | \(\mathrm{mean}_{w \in W_c} d(w, C)\) | Average wood→model distance on the low-poly support |
+| `Whole_MedianDist_m` | median of those distances | Robust “how far from optimal fit” |
+| `Whole_P90Dist_m` | 90th percentile of those distances | Tail / missed branches |
+
+`MetricTarget` in the CSV records which wood sources were used (e.g. `hires_wood_abstraction:trunk_mesh+recall:trunk_mesh_voxel_0.08m`).
+
+**Why asymmetric targets?** Precision uses dense \(W\) so floating or oversized cylinders are penalized against the real surface. Recall and distances use coarsened \(W_c\) so hair-thin twigs that no reasonable low-poly model would keep do not dominate completeness. Setting `--abstraction-target-voxel 0` makes recall use dense \(W\) as well.
+
+**Secondary scores (optional):** `CylGT_*` plus radius-split `Trunk_*` / `Branch_*` compare predicted cylinders to weak mesh-OBB cylinder GT from `*_gt.txt`. These are diagnostics only—not the wood-only abstraction score. Disable with `--no-keep-cyl-gt-metrics`.
+
 Defaults are sequential: do not run multiple full TreeQSM/SmartQSM jobs concurrently on a 16 GB machine. Each worker is thread-pinned, TreeQSM plots and distance reports are disabled, and memory/time limit failures are recorded as statuses rather than zero scores.
 
-Primary metrics are whole-tree distance-tolerance precision/recall/F1, voxel IoU, and volume ratio. Optional trunk/branch summaries use a radius threshold because synthetic `branch_id` does not encode branch order. Runs resume at `(file, condition, algorithm, config)` granularity.
+Runs resume at `(file, condition, algorithm, config)` granularity. Successful cylinder models are cached under `cylinders/` for re-scoring.
 
 Useful options:
 
@@ -271,9 +308,11 @@ Useful options:
 | `--qsm-voxel-size` | `0.08` | Input downsampling before QSM |
 | `--max-points` | `400000` | Deterministic cap per condition |
 | `--num-workers` | `1` | Tile workers; explicitly limited to 1 or 2 |
-| `--distance-tolerance` | `0.05` | Surface matching tolerance (m) |
-| `--metric-voxel-size` | `0.10` | Voxel IoU resolution (m) |
-| `--trunk-radius-threshold` | `0.05` | Radius split for optional summaries |
+| `--distance-tolerance` | `0.05` | Match tolerance (m) for wood target ↔ cylinder abstraction |
+| `--abstraction-target-voxel` | `0.08` | Coarsen wood target to this resolution (proxy for optimal low-poly); `0` = full high-res |
+| `--metric-voxel-size` | `0.10` | Legacy voxel helper / secondary CylGT path |
+| `--trunk-radius-threshold` | `0.05` | Radius split for optional CylGT trunk/branch summaries |
+| `--keep-cyl-gt-metrics` / `--no-keep-cyl-gt-metrics` | on | Secondary mesh-OBB cylinder-GT scores |
 | `--sq-leafon-cfg` / `--sq-leafoff-cfg` | spconv LEAFON / space-colonization | Condition-specific SmartQSM settings; override for CPU/GPU availability |
 | `--export-adqsm` | off | Export condition-specific XYZ + manifest for manual AdQSM runs |
 
