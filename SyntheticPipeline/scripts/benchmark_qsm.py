@@ -50,7 +50,14 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from ecomodel_lite import EcomodelLite
+from gui.adtree_runner import run_adtree_on_cloud
+from gui.archi_runner import run_archi_on_cloud
 from gui.smartqsm_runner import run_smartqsm_on_segments
+
+
+DEFAULT_ADTREE_EXE = ROOT_DIR / "thirdparty" / "AdTree" / "AdTree-v1.1.2_for_Windows" / "AdTree.exe"
+DEFAULT_ARCHI_SCRIPT = ROOT_DIR / "SyntheticPipeline" / "scripts" / "run_archi_qsm.R"
+VALID_ALGORITHMS = {"TreeQSM", "SmartQSM", "AdTree", "aRchi"}
 
 
 RESULT_COLUMNS = [
@@ -77,6 +84,35 @@ class MockConfig:
         self.smartqsm_config = sq_cfg
         self.smartqsm_timeout = timeout
         self.smartqsm_memory_limit_gb = memory_limit_gb
+
+
+class AdTreeConfig:
+    def __init__(self, exe, timeout=None, memory_limit_gb=None):
+        self.adtree_exe = exe
+        self.adtree_timeout = timeout
+        self.adtree_memory_limit_gb = memory_limit_gb
+
+
+class ArchiConfig:
+    def __init__(
+        self,
+        rscript,
+        script,
+        timeout=None,
+        memory_limit_gb=None,
+        d=0.5,
+        cl_dist=0.2,
+        max_d=1.0,
+        sec_length=0.5,
+    ):
+        self.archi_rscript = rscript
+        self.archi_script = script
+        self.archi_timeout = timeout
+        self.archi_memory_limit_gb = memory_limit_gb
+        self.archi_d = d
+        self.archi_cl_dist = cl_dist
+        self.archi_max_d = max_d
+        self.archi_sec_length = sec_length
 
 
 def sample_cylinders(cylinders, num_points=100000, rng=None):
@@ -600,6 +636,59 @@ def benchmark_tile(tile_path, args, completed=None):
                     status, error = "memory_limit", log_text[-4000:]
                 else:
                     status, error = "error", log_text[-4000:]
+            elif algorithm == "AdTree":
+                config = json.dumps({"exe": args.adtree_exe}, sort_keys=True)
+                row = _base_result(tile_path, condition, algorithm, config, len(points), prep_time, args, row_seed)
+                if _result_key(row) in completed:
+                    continue
+                temp_dir = os.path.join(args.out_dir, "adtree_temp", Path(base_name).name, condition)
+                adtree_config = AdTreeConfig(
+                    args.adtree_exe, args.adtree_timeout, args.memory_limit_gb
+                )
+                logs = []
+                started = time.time()
+                cylinders = run_adtree_on_cloud(points, temp_dir, adtree_config, log=logs.append)
+                elapsed = time.time() - started
+                peak = getattr(adtree_config, "adtree_peak_rss_gb", 0.0)
+                status = getattr(adtree_config, "adtree_status", "error")
+                error = getattr(adtree_config, "adtree_error", "")
+                if status != "ok" and not error:
+                    error = "".join(logs)[-4000:]
+            elif algorithm == "aRchi":
+                config = json.dumps(
+                    {
+                        "rscript": args.archi_rscript,
+                        "script": args.archi_script,
+                        "D": args.archi_d,
+                        "cl_dist": args.archi_cl_dist,
+                        "max_d": args.archi_max_d,
+                        "sec_length": args.archi_sec_length,
+                    },
+                    sort_keys=True,
+                )
+                row = _base_result(tile_path, condition, algorithm, config, len(points), prep_time, args, row_seed)
+                if _result_key(row) in completed:
+                    continue
+                temp_dir = os.path.join(args.out_dir, "archi_temp", Path(base_name).name, condition)
+                archi_config = ArchiConfig(
+                    args.archi_rscript,
+                    args.archi_script,
+                    args.archi_timeout,
+                    args.memory_limit_gb,
+                    d=args.archi_d,
+                    cl_dist=args.archi_cl_dist,
+                    max_d=args.archi_max_d,
+                    sec_length=args.archi_sec_length,
+                )
+                logs = []
+                started = time.time()
+                cylinders = run_archi_on_cloud(points, temp_dir, archi_config, log=logs.append)
+                elapsed = time.time() - started
+                peak = getattr(archi_config, "archi_peak_rss_gb", 0.0)
+                status = getattr(archi_config, "archi_status", "error")
+                error = getattr(archi_config, "archi_error", "")
+                if status != "ok" and not error:
+                    error = "".join(logs)[-4000:]
             else:
                 continue
 
@@ -690,6 +779,8 @@ def build_parser():
     parser.add_argument("--trunk-radius-threshold", type=float, default=0.05)
     parser.add_argument("--treeqsm-timeout", type=float, default=900)
     parser.add_argument("--smartqsm-timeout", type=float, default=900)
+    parser.add_argument("--adtree-timeout", type=float, default=900)
+    parser.add_argument("--archi-timeout", type=float, default=900)
     parser.add_argument("--memory-limit-gb", type=float, default=15.0)
     parser.add_argument("--patch-diam1", type=float, default=0.10)
     parser.add_argument("--ball-rad1", type=float, default=0.12)
@@ -707,6 +798,13 @@ def build_parser():
         "--sq-leafoff-cfg",
         default=str(ROOT_DIR / "thirdparty" / "SmartQSM" / "configs" / "space-colonization.yaml"),
     )
+    parser.add_argument("--adtree-exe", default=str(DEFAULT_ADTREE_EXE))
+    parser.add_argument("--archi-rscript", default="Rscript")
+    parser.add_argument("--archi-script", default=str(DEFAULT_ARCHI_SCRIPT))
+    parser.add_argument("--archi-d", type=float, default=0.5)
+    parser.add_argument("--archi-cl-dist", type=float, default=0.2)
+    parser.add_argument("--archi-max-d", type=float, default=1.0)
+    parser.add_argument("--archi-sec-length", type=float, default=0.5)
     return parser
 
 
@@ -716,7 +814,7 @@ def main():
     args.out_dir = os.path.abspath(args.out_dir)
     args.algorithms = [value.strip() for value in args.algorithms.split(",") if value.strip()]
     args.conditions = [value.strip() for value in args.conditions.split(",") if value.strip()]
-    unknown = set(args.algorithms) - {"TreeQSM", "SmartQSM"}
+    unknown = set(args.algorithms) - VALID_ALGORITHMS
     if unknown:
         raise ValueError(f"Unknown algorithms: {sorted(unknown)}")
     valid_conditions = {"leaf_on", "rgi", "oracle_wood", "gbseparation"}
@@ -749,7 +847,24 @@ def main():
             tile_rows = []
             for condition in args.conditions:
                 for algorithm in args.algorithms:
-                    cfg = (args.sq_leafon_cfg if condition == "leaf_on" else args.sq_leafoff_cfg) if algorithm == "SmartQSM" else ""
+                    if algorithm == "SmartQSM":
+                        cfg = args.sq_leafon_cfg if condition == "leaf_on" else args.sq_leafoff_cfg
+                    elif algorithm == "AdTree":
+                        cfg = json.dumps({"exe": args.adtree_exe}, sort_keys=True)
+                    elif algorithm == "aRchi":
+                        cfg = json.dumps(
+                            {
+                                "rscript": args.archi_rscript,
+                                "script": args.archi_script,
+                                "D": args.archi_d,
+                                "cl_dist": args.archi_cl_dist,
+                                "max_d": args.archi_max_d,
+                                "sec_length": args.archi_sec_length,
+                            },
+                            sort_keys=True,
+                        )
+                    else:
+                        cfg = ""
                     row = _base_result(tile_path, condition, algorithm, cfg, 0, 0.0, args, args.seed)
                     row.update(Status="preprocess_error", Error=error)
                     tile_rows.append(row)

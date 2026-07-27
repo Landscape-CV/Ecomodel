@@ -63,7 +63,7 @@ plot_species_performance.py  →  per-species comparison charts
 - `generate_test_dataset.py` — Builds per-species single-tree benchmark tiles
 - `label_gt_points.py` — Labels scan points as wood (1) or leaf (0) from trunk mesh distance
 - `benchmark_separation.py` — Runs separation algorithms and writes metrics CSV
-- `benchmark_qsm.py` — Compares TreeQSM and SmartQSM under leaf-on, RGI, and oracle inputs
+- `benchmark_qsm.py` — Compares TreeQSM, SmartQSM, and optional AdTree/aRchi under leaf-on, RGI, and oracle inputs
 - `plot_species_performance.py` — Bar charts of trunk metrics grouped by species
 - `plot_benchmark_qsm.py` — Plots successful QSM benchmark rows
 
@@ -244,7 +244,9 @@ Per-tile logs are written to `output/logs/`. Instance caches (`*_instances.npz`)
 - `oracle_wood` — synthetic GT labels; an upper bound, not a deployable method
 - `gbseparation` — optional geometry-only separator (`--include-gbseparation`)
 
-TreeQSM uses the same cover-set → segmentation → cylinder path as `gui/pipeline_lite.py`. SmartQSM uses its recommended `LEAFON` config for leaf-on points and `LEAFOFF` config for separated/oracle points.
+TreeQSM uses the same cover-set → segmentation → cylinder path as `gui/pipeline_lite.py`. SmartQSM uses its recommended `LEAFON` config for leaf-on points and `LEAFOFF` config for separated/oracle points. Optional backends **AdTree** and **aRchi** consume the same condition clouds (no leaf-on/off configs of their own).
+
+Default algorithms remain `TreeQSM,SmartQSM`. Opt in with e.g. `--algorithms AdTree,aRchi,SmartQSM`.
 
 For a conservative run below 16 GB:
 
@@ -271,7 +273,7 @@ All conditions (`leaf_on`, `rgi`, `oracle_wood`, …) are scored the same way. T
 |--------|--------|------|
 | Dense wood \(W\) | `*_trunk.ply` surface samples (fallback: labeled LAZ wood points) | True high-res wood surface |
 | Coarse wood \(W_c\) | \(W\) voxel-downsampled at `--abstraction-target-voxel` (default **0.08 m**) | Proxy for structure a low-poly model should keep |
-| Predicted cylinders \(C\) | TreeQSM / SmartQSM output, starts translated back to world coordinates | Low-poly abstraction |
+| Predicted cylinders \(C\) | TreeQSM / SmartQSM / AdTree / aRchi output, starts translated back to world coordinates | Low-poly abstraction |
 | Cylinder surface samples \(S\) | Lateral surfaces of \(C\), area-weighted (`--surface-samples`) | Discrete QSM surface |
 
 **Distance**
@@ -314,7 +316,58 @@ Useful options:
 | `--trunk-radius-threshold` | `0.05` | Radius split for optional CylGT trunk/branch summaries |
 | `--keep-cyl-gt-metrics` / `--no-keep-cyl-gt-metrics` | on | Secondary mesh-OBB cylinder-GT scores |
 | `--sq-leafon-cfg` / `--sq-leafoff-cfg` | spconv LEAFON / space-colonization | Condition-specific SmartQSM settings; override for CPU/GPU availability |
+| `--adtree-exe` | `thirdparty/AdTree/.../AdTree.exe` | AdTree v1.1.2 Windows executable |
+| `--adtree-timeout` | `900` | AdTree wall-clock limit (s) |
+| `--archi-rscript` | `Rscript` | Path to Rscript |
+| `--archi-script` | `scripts/run_archi_qsm.R` | Headless aRchi entrypoint |
+| `--archi-d` / `--archi-cl-dist` / `--archi-max-d` / `--archi-sec-length` | `0.5` / `0.2` / `1.0` / `0.5` | Coarse/fast aRchi skeletonization defaults |
 | `--export-adqsm` | off | Export condition-specific XYZ + manifest for manual AdQSM runs |
+
+### Optional backends: AdTree and aRchi
+
+Neither is bundled in git (AdTree binaries are gitignored; aRchi lives in the user R library). Defaults stay `TreeQSM,SmartQSM`; pass `--algorithms AdTree,aRchi` to opt in. Neither backend has leaf-on/off configs — they consume whatever condition cloud is selected.
+
+#### AdTree install and config
+
+1. Download [AdTree v1.1.2 for Windows](https://github.com/tudelft3d/AdTree/releases/tag/v1.1.2) and extract under `thirdparty/AdTree/` so `AdTree.exe` is at:
+
+   `thirdparty/AdTree/AdTree-v1.1.2_for_Windows/AdTree.exe`
+
+   Step-by-step (including curl one-liner): [`thirdparty/AdTree/README.md`](../thirdparty/AdTree/README.md).
+
+2. Python dependency: `plyfile` (already in the project venv).
+
+3. Benchmark wiring: [`gui/adtree_runner.py`](../gui/adtree_runner.py) — writes XYZ → `AdTree.exe … -s` → parses `*_skeleton.ply` → Cx9. **Success = skeleton PLY exists** (exit codes are inverted). CLI knobs: `--adtree-exe`, `--adtree-timeout`.
+
+#### aRchi install and config
+
+1. Install **R** and **Rtools** (Windows). Example: `winget install RProject.R` and `winget install RProject.Rtools`.
+
+2. Install packages into the user library (aRchi is **off CRAN**; on R 4.6+ CRAN often lacks `lidR`/`rlas` binaries):
+
+```r
+install.packages("remotes")
+remotes::install_url("https://github.com/r-lidar/rlas/archive/refs/heads/master.zip")
+remotes::install_url("https://github.com/r-lidar/lidR/archive/refs/heads/master.zip")
+remotes::install_url("https://github.com/umr-amap/aRchi/archive/refs/heads/master.zip")
+```
+
+Packages land in `~/R/win-library/<R-version>/`. Put Rtools `usr\bin` on `PATH` when compiling.
+
+3. Benchmark wiring: [`gui/archi_runner.py`](../gui/archi_runner.py) calls [`scripts/run_archi_qsm.R`](scripts/run_archi_qsm.R) via `Rscript`. The runner sets `R_LIBS_USER` automatically. Pipeline inside R: `build_aRchi` → `add_pointcloud` (XYZ table) → `skeletonize_pc` → `smooth_skeleton` → `add_radius` → CSV → Cx9.
+
+4. CLI knobs: `--archi-rscript` (full path if R is not on PATH), `--archi-script`, `--archi-timeout`, and coarse/fast defaults `--archi-d 0.5 --archi-cl-dist 0.2 --archi-max-d 1.0 --archi-sec-length 0.5`.
+
+Example smoke:
+
+```bash
+python scripts/benchmark_qsm.py \
+  --algorithms AdTree,aRchi \
+  --conditions oracle_wood \
+  --sample-n 1 \
+  --out-dir output/qsm_adtree_archi_smoke \
+  --archi-rscript "C:/Program Files/R/R-4.6.1/bin/Rscript.exe"
+```
 
 AdQSM's available test build is GUI-only and cannot be included in an unattended timed benchmark. `--export-adqsm` creates reproducible inputs and parameter metadata; its outputs must be run and imported manually.
 
