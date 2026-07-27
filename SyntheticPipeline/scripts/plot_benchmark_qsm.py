@@ -7,7 +7,8 @@ Always writes:
 
 Primary scores are high-res wood → low-poly cylinder abstraction fidelity.
 Leaf-on / Leaf-off / Wood-only share one hue family with light→dark tints.
-TreeQSM and SmartQSM are faceted so condition groups stay readable.
+Each QSM algorithm (TreeQSM, SmartQSM, AdTree, aRchi, …) is faceted so
+condition groups stay readable.
 """
 
 from __future__ import annotations
@@ -67,6 +68,87 @@ CONDITION_TINTS = {
     "gbseparation": "#7BB8A6",
 }
 
+# title, direction label, one-line definition for subplot annotations
+METRIC_INFO = {
+    "Whole_F1": (
+        "Abstraction F1 (hi-res wood ↔ cylinders)",
+        "higher is better",
+        "Harmonic mean of precision and recall vs the wood surface.",
+    ),
+    "Whole_IoU": (
+        "Abstraction IoU",
+        "higher is better",
+        "F1 rewritten as an IoU-like overlap score.",
+    ),
+    "Whole_MedianDist_m": (
+        "Median wood→model distance (m)",
+        "lower is better",
+        "Median distance from coarse wood points to nearest cylinder surface.",
+    ),
+    "Whole_P90Dist_m": (
+        "P90 wood→model distance (m)",
+        "lower is better",
+        "90th-percentile wood→cylinder distance (tail / missed branches).",
+    ),
+    "Whole_Precision": (
+        "Abstraction precision",
+        "higher is better",
+        "Fraction of QSM surface within tolerance of dense high-res wood "
+        "(does not invent geometry).",
+    ),
+    "Whole_Recall": (
+        "Abstraction recall",
+        "higher is better",
+        "Fraction of coarse wood support covered by cylinders "
+        "(completeness of the low-poly fit).",
+    ),
+    "Trunk_F1": (
+        "Trunk F1 (secondary CylGT)",
+        "higher is better",
+        "Secondary score vs weak mesh-OBB cylinder GT (large-radius parts).",
+    ),
+    "Branch_F1": (
+        "Branch F1 (secondary CylGT)",
+        "higher is better",
+        "Secondary score vs weak mesh-OBB cylinder GT (small-radius parts).",
+    ),
+    "Trunk_Precision": (
+        "Trunk Precision (CylGT)",
+        "higher is better",
+        "Secondary trunk precision vs mesh-OBB cylinder GT.",
+    ),
+    "Trunk_Recall": (
+        "Trunk Recall (CylGT)",
+        "higher is better",
+        "Secondary trunk recall vs mesh-OBB cylinder GT.",
+    ),
+    "Branch_Precision": (
+        "Branch Precision (CylGT)",
+        "higher is better",
+        "Secondary branch precision vs mesh-OBB cylinder GT.",
+    ),
+    "Branch_Recall": (
+        "Branch Recall (CylGT)",
+        "higher is better",
+        "Secondary branch recall vs mesh-OBB cylinder GT.",
+    ),
+}
+
+BENCHMARK_METHOD_LINES = [
+    "How the benchmark is run:",
+    "1) Preprocess each tile: normalize → CSF ground removal → intensity filter "
+    "(mirrors pipeline_lite).",
+    "2) Build three QSM inputs from that cloud: Leaf-on (foliage kept), "
+    "Leaf-off/RGI (SegmentRGI wood), Wood-only/oracle (GT wood labels).",
+    "3) Run each QSM backend on the chosen input; translate cylinders back to "
+    "world coords.",
+    "4) Score as high-res wood → low-poly cylinder abstraction: precision vs "
+    "dense *_trunk.ply; recall + distances vs an 8 cm–coarsened wood target "
+    "(τ = distance tolerance, default 5 cm).",
+    "5) Bars are species-averaged means of successful (Status=ok) runs; "
+    "CylGT trunk/branch panels are secondary diagnostics only.",
+]
+
 
 def _sibling_out_path(out_path: str, suffix: str) -> str:
     root, ext = os.path.splitext(out_path)
@@ -86,7 +168,6 @@ def _y_limit(values, pad_ratio: float = 0.12, *, metric: str | None = None) -> f
     is_distance = bool(metric and ("Dist" in metric or metric.endswith("_m")))
     if is_distance:
         return max(padded, peak + 0.05)
-    # Keep some headroom for bar labels; never force a full 0-1 axis for tiny scores.
     if peak < 0.05:
         return max(padded, 0.05)
     if peak < 0.2:
@@ -112,7 +193,6 @@ def _tint_palette(order: list[str]) -> dict[str, str]:
         if condition in CONDITION_TINTS:
             palette[CONDITION_LABELS.get(condition, condition)] = CONDITION_TINTS[condition]
     if extras:
-        # Fallback: generate nearby tints for unexpected conditions.
         for i, condition in enumerate(extras):
             lightness = 0.75 - 0.15 * i
             rgb = colorsys.hls_to_rgb(0.45, max(0.25, lightness), 0.45)
@@ -120,7 +200,31 @@ def _tint_palette(order: list[str]) -> dict[str, str]:
     return palette
 
 
-def _add_input_legend(fig: plt.Figure, conditions: list[str], palette: dict[str, str]) -> None:
+def _metric_title(metric: str, *, species_averaged: bool = False) -> str:
+    title, direction, _ = METRIC_INFO.get(metric, (metric, "", ""))
+    if species_averaged:
+        title = f"{title} (species-averaged)"
+    if direction:
+        return f"{title}\n({direction})"
+    return title
+
+
+def _metric_ylabel(metric: str) -> str:
+    _, direction, _ = METRIC_INFO.get(metric, (metric, "", ""))
+    if "Dist" in metric or metric.endswith("_m"):
+        base = "Distance (m)"
+    else:
+        base = "Score"
+    return f"{base}\n[{direction}]" if direction else base
+
+
+def _add_figure_guides(
+    fig: plt.Figure,
+    conditions: list[str],
+    palette: dict[str, str],
+    metrics: list[str],
+) -> None:
+    """Top legend for input conditions + footer describing how the benchmark works."""
     handles = [
         Patch(
             facecolor=palette[CONDITION_LABELS.get(c, c)],
@@ -129,7 +233,7 @@ def _add_input_legend(fig: plt.Figure, conditions: list[str], palette: dict[str,
         )
         for c in conditions
     ]
-    legend = fig.legend(
+    fig.legend(
         handles=handles,
         title="Input condition (light → dark = leafy → wood-only)",
         loc="upper center",
@@ -140,23 +244,32 @@ def _add_input_legend(fig: plt.Figure, conditions: list[str], palette: dict[str,
         title_fontsize=9,
     )
 
-    lines = ["How inputs were built:"]
+    lines = list(BENCHMARK_METHOD_LINES)
+    lines.append("")
+    lines.append("Input conditions (bar colors):")
     for condition in conditions:
         lines.append(f"• {CONDITION_EXPLANATIONS.get(condition, condition)}")
-    lines.append(
-        "Primary score: high-res wood model vs low-poly QSM cylinders "
-        "(abstraction fidelity). Panels split QSM methods; within each panel, "
-        "bars for one species are Leaf-on / Leaf-off / Wood-only side by side."
-    )
-    text = "\n".join(textwrap.fill(line, width=110) for line in lines)
+
+    metric_bits = []
+    for metric in metrics:
+        info = METRIC_INFO.get(metric)
+        if not info:
+            continue
+        short = info[0].split("(")[0].strip()
+        metric_bits.append(f"{short}: {info[1]}")
+    if metric_bits:
+        lines.append("")
+        lines.append("Panel guide — " + " | ".join(metric_bits))
+
+    text = "\n".join(textwrap.fill(line, width=118) for line in lines)
     fig.text(
         0.01,
         0.01,
         text,
         ha="left",
         va="bottom",
-        fontsize=8,
-        linespacing=1.35,
+        fontsize=7.5,
+        linespacing=1.3,
         bbox={
             "boxstyle": "round",
             "facecolor": "white",
@@ -164,13 +277,11 @@ def _add_input_legend(fig: plt.Figure, conditions: list[str], palette: dict[str,
             "alpha": 0.95,
         },
     )
-    return legend
 
 
 def _save_faceted_metrics(
     df: pd.DataFrame,
     metrics: list[str],
-    titles: dict[str, str],
     out_path: str,
     *,
     condition_order: list[str],
@@ -183,16 +294,17 @@ def _save_faceted_metrics(
 
     n_metrics = len(metrics)
     n_algos = max(1, len(algorithms))
-    width = max(11.0, 1.1 * len(species_order) * n_algos)
+    width = max(11.0, 1.15 * len(species_order) * n_algos)
     fig, axes = plt.subplots(
         n_metrics,
         n_algos,
-        figsize=(width, 3.8 * n_metrics + 1.5),
+        figsize=(width, 4.4 * n_metrics + 2.4),
         sharey="row",
         squeeze=False,
     )
 
     for row, metric in enumerate(metrics):
+        _, direction, definition = METRIC_INFO.get(metric, (metric, "", ""))
         for col, algorithm in enumerate(algorithms):
             ax = axes[row][col]
             subset = df[df["Algorithm"] == algorithm]
@@ -209,8 +321,10 @@ def _save_faceted_metrics(
             )
             if row == 0:
                 ax.set_title(algorithm, fontsize=13, fontweight="bold")
+            else:
+                ax.set_title("")
             if col == 0:
-                ax.set_ylabel(titles.get(metric, metric), fontsize=10)
+                ax.set_ylabel(_metric_ylabel(metric), fontsize=9)
             else:
                 ax.set_ylabel("")
             ax.set_xlabel("")
@@ -224,13 +338,28 @@ def _save_faceted_metrics(
             if legend is not None:
                 legend.remove()
 
-        # Shared y-scale per metric row so TreeQSM/SmartQSM stay comparable.
         row_max = _y_limit(df[metric], metric=metric)
         for col in range(n_algos):
             axes[row][col].set_ylim(0, row_max)
 
-    _add_input_legend(fig, condition_order, palette)
-    fig.tight_layout(rect=(0, 0.16, 1, 0.93))
+        # Row banner: metric name + direction + short definition on the left panel.
+        banner = _metric_title(metric)
+        if definition:
+            banner = f"{banner}\n{definition}"
+        axes[row][0].annotate(
+            banner,
+            xy=(0.0, 1.08),
+            xycoords="axes fraction",
+            ha="left",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
+            color="0.15",
+            annotation_clip=False,
+        )
+
+    _add_figure_guides(fig, condition_order, palette, metrics)
+    fig.tight_layout(rect=(0, 0.24, 1, 0.94))
     out_dir = os.path.dirname(os.path.abspath(out_path))
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -242,7 +371,6 @@ def _save_faceted_metrics(
 def _save_condition_summary(
     df: pd.DataFrame,
     metrics: list[str],
-    titles: dict[str, str],
     out_path: str,
     *,
     condition_order: list[str],
@@ -257,7 +385,7 @@ def _save_condition_summary(
     algo_order = sorted(summary["Algorithm"].unique())
 
     nrows = (len(metrics) + 1) // 2
-    fig, axes = plt.subplots(nrows, 2, figsize=(12, 4.6 * nrows + 1.2))
+    fig, axes = plt.subplots(nrows, 2, figsize=(12.5, 5.1 * nrows + 2.2))
     axes = np.atleast_1d(axes).flatten()
 
     for ax, metric in zip(axes, metrics):
@@ -272,9 +400,27 @@ def _save_condition_summary(
             ax=ax,
             errorbar=None,
         )
-        ax.set_title(titles.get(metric, metric), fontsize=12)
+        title, direction, definition = METRIC_INFO.get(metric, (metric, "", ""))
+        ax.set_title(f"{title} (species-averaged)", fontsize=11, pad=30)
+        caption_bits = []
+        if direction:
+            caption_bits.append(f"({direction})")
+        if definition:
+            caption_bits.append(definition)
+        if caption_bits:
+            ax.text(
+                0.0,
+                1.015,
+                textwrap.fill(" ".join(caption_bits), width=72),
+                transform=ax.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=7.5,
+                color="0.3",
+                clip_on=False,
+            )
         ax.set_xlabel("")
-        ax.set_ylabel("Distance (m)" if "Dist" in metric or metric.endswith("_m") else "Score")
+        ax.set_ylabel(_metric_ylabel(metric), fontsize=9)
         ax.set_ylim(0, _y_limit(summary[metric], metric=metric))
         for container in ax.containers:
             ax.bar_label(container, fmt="%.2f", padding=2, fontsize=8)
@@ -285,8 +431,9 @@ def _save_condition_summary(
     for ax in axes[len(metrics) :]:
         ax.set_visible(False)
 
-    _add_input_legend(fig, condition_order, palette)
-    fig.tight_layout(rect=(0, 0.18, 1, 0.92))
+    _add_figure_guides(fig, condition_order, palette, metrics)
+    fig.tight_layout(rect=(0, 0.26, 1, 0.93))
+    fig.subplots_adjust(hspace=0.55)
     out_dir = os.path.dirname(os.path.abspath(out_path))
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -330,7 +477,6 @@ def main():
     if "Whole_F1" not in overview_metrics:
         print("CSV is missing Whole_F1.", file=sys.stderr)
         return 1
-    # Fall back to secondary trunk/branch when present (older CSVs).
     for optional in ("Trunk_F1", "Branch_F1"):
         if optional in df.columns and df[optional].notna().any():
             overview_metrics.append(optional)
@@ -368,25 +514,9 @@ def main():
         .mean(numeric_only=True)
     )
 
-    titles = {
-        "Whole_F1": "Abstraction F1 (hi-res wood ↔ cylinders)",
-        "Whole_IoU": "Abstraction IoU",
-        "Whole_MedianDist_m": "Median wood→model distance (m)",
-        "Whole_P90Dist_m": "P90 wood→model distance (m)",
-        "Trunk_F1": "Trunk F1 (secondary CylGT)",
-        "Branch_F1": "Branch F1 (secondary CylGT)",
-        "Whole_Precision": "Abstraction precision",
-        "Whole_Recall": "Abstraction recall",
-        "Trunk_Precision": "Trunk Precision (CylGT)",
-        "Trunk_Recall": "Trunk Recall (CylGT)",
-        "Branch_Precision": "Branch Precision (CylGT)",
-        "Branch_Recall": "Branch Recall (CylGT)",
-    }
-
     _save_faceted_metrics(
         species_df,
         overview_metrics,
-        titles,
         args.out,
         condition_order=condition_order,
     )
@@ -394,7 +524,6 @@ def main():
     _save_faceted_metrics(
         species_df,
         pr_metrics,
-        titles,
         _sibling_out_path(args.out, "precision_recall"),
         condition_order=condition_order,
     )
@@ -406,7 +535,6 @@ def main():
     _save_condition_summary(
         species_df,
         summary_metrics,
-        {k: f"{v} (species-averaged)" for k, v in titles.items()},
         _sibling_out_path(args.out, "by_condition"),
         condition_order=condition_order,
     )

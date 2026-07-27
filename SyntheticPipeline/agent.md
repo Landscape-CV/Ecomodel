@@ -77,6 +77,8 @@ Key learnings, architectural decisions, and physics logic from developing the sy
 - **Metrics (secondary):** Weak mesh-OBB cylinder GT (`CylGT_*`) plus optional radius-based trunk/branch summaries. Do not treat these as the wood-only score (`--no-keep-cyl-gt-metrics` to skip).
 - **Caches:** World-space cylinders are saved under `out_dir/cylinders/` for re-scoring without re-running QSM.
 - **SmartQSM:** Use `LEAFON` config for foliage and `LEAFOFF` for RGI/oracle inputs. Each tile/condition needs a unique temp directory and subprocess timeout.
+- **AdTree:** Optional CLI backend (`gui/adtree_runner.py`). Download Windows v1.1.2 into `thirdparty/AdTree/` (binaries gitignored; see `thirdparty/AdTree/README.md`). Parse `*_skeleton.ply` edges to Cx9; **ignore AdTree exit codes** (inverted). No leaf-mode config — uses the selected condition cloud as-is. Needs `plyfile`.
+- **aRchi:** Optional R backend (`gui/archi_runner.py` + `scripts/run_archi_qsm.R`). Install R + Rtools, then GitHub zipballs for `rlas` → `lidR` → `aRchi` (off CRAN; R 4.6 often needs this path). Packages go under `~/R/win-library/<ver>`; runner sets `R_LIBS_USER`. Default skeleton params are coarse/fast (`D=0.5`, `cl_dist=0.2`, `max_d=1`). Pass `--archi-rscript` if `Rscript` is not on PATH.
 - **AdQSM:** The available test build is GUI-only. Export XYZ + a manifest for manual runs; do not report it as an automated benchmark backend.
 - **Leaf separation inventory:** SegmentRGI is the golden lite-pipeline method; GBSeparation is the geometry-only alternative. Intensity thresholding is only a pre-filter, and SmartQSM cylinder proximity is a post-hoc separation proxy rather than a preprocessing method.
 
@@ -102,6 +104,8 @@ Key learnings, architectural decisions, and physics logic from developing the sy
 | OOM during assembly or benchmark KD-tree | Lower ray resolution, increase voxel downsample, reduce `pool_size` / `tiles_per_batch` |
 | Empty asset dir in assembler | Generators must output paired `.obj` + `.json`; assembler skips `*_noleaf.obj` when listing assets |
 | SmartQSM benchmark failures | Verify the SmartQSM Python plus `--sq-leafon-cfg` / `--sq-leafoff-cfg`; inspect the CSV error/status |
+| AdTree “fails” with exit code 1 | Expected on success; check for `*_skeleton.ply` instead of `returncode == 0` |
+| aRchi install / Rscript missing | Install R + Rtools; on R 4.6+ install `rlas`/`lidR`/aRchi via GitHub zipballs; pass `--archi-rscript` if R is not on PATH |
 | TreeQSM reaches timeout | Check point cap/voxel size and worker status; plotting and full-model queue transfer must remain disabled |
 | Missing `lib/arbaro` | Run `python scripts/setup_arbaro.py` and add species XMLs to `lib/arbaro/trees/` |
 | Config not found | Copy `configs/*.example.*` to non-example names; machine-specific paths are gitignored |

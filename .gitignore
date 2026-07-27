@@ -46,3 +46,8 @@ temp_wheels/
 *.dxf
 *.mat
 __pycache__/
+
+# AdTree Windows prebuilt (download locally; keep README only)
+thirdparty/AdTree/**
+!thirdparty/AdTree/
+!thirdparty/AdTree/README.md
