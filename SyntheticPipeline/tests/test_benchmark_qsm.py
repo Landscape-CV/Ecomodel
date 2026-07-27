@@ -12,6 +12,8 @@ for path in (ROOT_DIR, SCRIPTS_DIR):
         sys.path.insert(0, str(path))
 
 from gui.smartqsm_runner import _parse_qsm_mat
+from gui.adtree_runner import parse_skeleton_ply_to_cx9
+from gui.archi_runner import parse_archi_csv_to_cx9
 from benchmark_qsm import (
     _sleep_worker,
     _world_cylinders,
@@ -123,3 +125,67 @@ def test_abstraction_penalizes_offset_cylinders():
     metrics = evaluate_abstraction_vs_hires(hires, offset, seed=5, args=Args())
     assert metrics["Whole_F1"] < 0.2
     assert metrics["Whole_MedianDist_m"] > 0.2
+
+
+def _write_ascii_skeleton_ply(path):
+    # Vertical trunk + one side branch; radii 0.2 and 0.1.
+    path.write_text(
+        "\n".join(
+            [
+                "ply",
+                "format ascii 1.0",
+                "element vertex 3",
+                "property float x",
+                "property float y",
+                "property float z",
+                "property float radius",
+                "element edge 2",
+                "property list uchar int vertex_indices",
+                "end_header",
+                "0 0 0 0.2",
+                "0 0 1 0.2",
+                "1 0 1 0.1",
+                "2 0 1",
+                "2 1 2",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_adtree_skeleton_ply_parses_to_cx9(tmp_path):
+    ply_path = tmp_path / "tree_skeleton.ply"
+    _write_ascii_skeleton_ply(ply_path)
+    cylinders = parse_skeleton_ply_to_cx9(ply_path)
+    assert cylinders.shape == (2, 9)
+    np.testing.assert_allclose(cylinders[0, :3], [0, 0, 0])
+    np.testing.assert_allclose(cylinders[0, 3], 0.2)
+    np.testing.assert_allclose(cylinders[0, 4:7], [0, 0, 1])
+    np.testing.assert_allclose(cylinders[0, 7], 1.0)
+    np.testing.assert_allclose(cylinders[1, 3], 0.15)  # mean(0.2, 0.1)
+    assert cylinders[0, 8] == 0
+    assert cylinders[1, 8] == 1
+
+
+def test_archi_csv_parses_to_cx9(tmp_path):
+    csv_path = tmp_path / "qsm.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "startX,startY,startZ,endX,endY,endZ,radius_cyl,length,branching_order",
+                "0,0,0,0,0,2,0.25,2,1",
+                "0,0,2,1,0,2,0.1,1,2",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cylinders = parse_archi_csv_to_cx9(csv_path)
+    assert cylinders.shape == (2, 9)
+    np.testing.assert_allclose(cylinders[0, :3], [0, 0, 0])
+    np.testing.assert_allclose(cylinders[0, 3], 0.25)
+    np.testing.assert_allclose(cylinders[0, 4:7], [0, 0, 1])
+    np.testing.assert_allclose(cylinders[0, 7], 2.0)
+    np.testing.assert_allclose(cylinders[0, 8], 1)
+    np.testing.assert_allclose(cylinders[1, 4:7], [1, 0, 0])
