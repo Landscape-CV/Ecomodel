@@ -433,10 +433,10 @@ class SegmenterScanline:
             "max_dist": 0.3,
             "base_height" : 1, 
             "layer_size" :0.15, 
-            "combine_nearby_bases" :False,
+            "combine_nearby_bases" :True,
         }
 
-        default_arguments.update(tuned_arguments)
+        default_arguments.update(default_arguments)
         segment_point_cloud(tile,**default_arguments)
         mask = tile.segment_labels >-2#filters out points that could not be connected, ideal will segment better and this will be uneccesary
         print("UNIQUE LABELS", np.unique(tile.segment_labels))

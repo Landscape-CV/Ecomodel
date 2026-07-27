@@ -115,7 +115,7 @@ def _parse_qsm_mat(mat_path):
 
 
 # ── GPU function: one segment in, Cx8 out. Scales to zero when idle. ──────────
-@app.function(gpu=GPU_TYPE, timeout=1800)
+@app.function(gpu=GPU_TYPE, timeout=3600)
 def run_smartqsm(points_bytes: bytes) -> bytes:
     """Reconstruct ONE tree on a GPU. Points in, cylinders out.
 
@@ -145,9 +145,11 @@ def run_smartqsm(points_bytes: bytes) -> bytes:
     Returns:
         A .npy file, as raw bytes, holding the Cx8 cylinder table.
 
-    Note the 1800s (30 min) timeout in the decorator. Modal kills the job at that
-    point. One tree finishes in a few minutes; a whole un-segmented tile does not
-    finish at all. See Docs/KNOWN_ISSUES.md.
+    Note the 3600s (60 min) timeout in the decorator. Modal kills the job at that
+    point. One tree finishes in a few minutes; the extra headroom is for a single
+    very large tree (e.g. a big mangrove) that can't be split further. A whole
+    un-segmented multi-tree tile still won't finish — segment first. See
+    Docs/KNOWN_ISSUES.md.
     """
     import io
     import os
