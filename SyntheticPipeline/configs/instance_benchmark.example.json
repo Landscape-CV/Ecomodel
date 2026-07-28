@@ -1,0 +1,51 @@
+{
+  "dataset_dir": "testdataset/instance",
+  "area_size": 20.0,
+  "pool_size_per_species": 5,
+  "num_workers": 4,
+  "replicates": 8,
+  "num_scans_range": [3, 5],
+  "height_range": [8.0, 15.0],
+  "compositions": ["mixed", "mono"],
+  "densities": {
+    "sparse": {
+      "num_trees": 2,
+      "placement_mode": "spread",
+      "min_spacing": 8.0,
+      "max_spacing": null
+    },
+    "moderate": {
+      "num_trees": 6,
+      "placement_mode": "random",
+      "min_spacing": 2.0,
+      "max_spacing": null
+    },
+    "dense": {
+      "num_trees": 15,
+      "placement_mode": "cluster",
+      "min_spacing": 0.5,
+      "max_spacing": 4.0
+    },
+    "extreme": {
+      "num_trees": 30,
+      "placement_mode": "cluster",
+      "min_spacing": 0.3,
+      "max_spacing": 2.5
+    }
+  },
+  "noise": {
+    "resolution_theta_deg": 0.2,
+    "resolution_phi_deg": 0.2,
+    "distance_noise_std": 0.005,
+    "wind_sway_std": 0.02,
+    "beam_divergence_noise_std": 0.005,
+    "voxel_downsample_size": 0.05,
+    "wind_x": 0.0,
+    "wind_y": 0.0
+  },
+  "label_schema": {
+    "ground": -1,
+    "clutter": -2,
+    "trees": ">=0"
+  }
+}

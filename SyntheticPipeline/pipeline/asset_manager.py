@@ -26,7 +26,14 @@ class AssetManager:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.generator = generator
 
-    def generate_trees(self, num_trees: int = 10, height_range: tuple = (8.0, 15.0), num_workers: int = 4):
+    def generate_trees(
+        self,
+        num_trees: int = 10,
+        height_range: tuple = (8.0, 15.0),
+        num_workers: int = 4,
+        name_prefix: str = "tree",
+        start_index: int = 0,
+    ):
         """
         Generates a specified number of trees in parallel.
         
@@ -34,17 +41,19 @@ class AssetManager:
             num_trees (int): Number of trees to generate.
             height_range (tuple): Min and max height for trees.
             num_workers (int): Number of parallel processes to use.
+            name_prefix (str): Filename prefix (species name for multi-species pools).
+            start_index (int): Starting index for filenames.
         """
         tasks = []
-        for i in range(num_trees):
+        for i in range(start_index, start_index + num_trees):
             seed = random.randint(0, 999999)
             height = random.uniform(*height_range)
-            out_obj = str(self.output_dir / f"tree_{i:04d}.obj")
-            out_json = str(self.output_dir / f"tree_{i:04d}.json")
+            out_obj = str(self.output_dir / f"{name_prefix}_{i:04d}.obj")
+            out_json = str(self.output_dir / f"{name_prefix}_{i:04d}.json")
             
             # Skip if already generated
             if os.path.exists(out_obj) and os.path.exists(out_json):
-                print(f"Tree {i:04d} already exists, skipping...")
+                print(f"{name_prefix}_{i:04d} already exists, skipping...")
                 continue
                 
             tasks.append((self.generator, seed, height, out_obj, out_json))
