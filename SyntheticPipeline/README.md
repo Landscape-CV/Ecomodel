@@ -22,6 +22,9 @@ Optional downstream steps (benchmark workflow):
 label_gt_points.py  →  per-point wood/leaf labels (.npy)
 benchmark_separation.py  →  metrics CSV + visualizations
 plot_species_performance.py  →  per-species comparison charts
+
+generate_instance_benchmark.py  →  multi-tree tiles + per-point instances.npy
+benchmark_instance_segmentation.py  →  Hungarian F1 / PQ by density stratum
 ```
 
 ## Features
@@ -52,8 +55,8 @@ plot_species_performance.py  →  per-species comparison charts
 ### `pipeline/`
 
 - `asset_manager.py` — Parallel tree generation via any `BaseTreeGenerator`
-- `forest_assembler.py` — Scene mesh (`.ply`) + global GT JSON + trunk mesh (`.ply`)
-- `simulator_open3d.py` — TLS raycaster; exports `.laz` with 16-bit intensity
+- `forest_assembler.py` — Scene mesh (`.ply`) + global GT JSON + trunk mesh (`.ply`) + `{scene}_face_tree_ids.npy`
+- `simulator_open3d.py` — TLS raycaster; exports `.laz` with 16-bit intensity (optional per-hit `*_instances.npy`)
 - `simulator_base.py` — Shared simulator interface
 - `gt_parser.py` — Converts scene GT JSON to cylinder `.txt` for evaluation
 
@@ -61,8 +64,10 @@ plot_species_performance.py  →  per-species comparison charts
 
 - `setup_arbaro.py` — Downloads and extracts Arbaro 1.9.8 into `lib/arbaro/`
 - `generate_test_dataset.py` — Builds per-species single-tree benchmark tiles
+- `generate_instance_benchmark.py` — Multi-tree / multi-species instance-segmentation tiles
 - `label_gt_points.py` — Labels scan points as wood (1) or leaf (0) from trunk mesh distance
 - `benchmark_separation.py` — Runs separation algorithms and writes metrics CSV
+- `benchmark_instance_segmentation.py` — Scores Scanline / TreeLearn instance IDs vs GT
 - `benchmark_qsm.py` — Compares TreeQSM, SmartQSM, and optional AdTree/aRchi under leaf-on, RGI, and oracle inputs
 - `plot_species_performance.py` — Bar charts of trunk metrics grouped by species
 - `plot_benchmark_qsm.py` — Plots successful QSM benchmark rows
@@ -171,9 +176,64 @@ python scripts/plot_species_performance.py
 
 Or pass `--plot` to `benchmark_separation.py` for an algorithm-level summary chart.
 
+## Quickstart: Multi-Tree Instance Segmentation Benchmark
+
+Pressure-tests tree **instance** segmentation under crown/stem overlap with high vegetation variety.
+
+### Design (default config)
+
+| Axis | Values |
+|------|--------|
+| Plot size | **20 × 20 m** |
+| Densities | `sparse` (2), `moderate` (6), `dense` (15), `extreme` (30 trees) |
+| Compositions | `mixed` (all Arbaro species) and `mono` (one species / tile) |
+| Replicates | 8 → **64 tiles** total |
+| Instance GT | `*_instances.npy` from ray hit `primitive_ids` → face→tree map |
+| Reserved IDs | ground = `-1`, clutter = `-2` (Phase 2), trees = `≥ 0` |
+
+Copy and optionally edit:
+
+```bash
+cp configs/instance_benchmark.example.json configs/instance_benchmark.json
+# tiny CI / smoke run:
+cp configs/instance_benchmark_smoke.example.json configs/instance_benchmark_smoke.json
+```
+
+### 1. Generate tiles
+
+Requires Arbaro (`python scripts/setup_arbaro.py`) with species XMLs in `lib/arbaro/trees/`.
+
+```bash
+python scripts/generate_instance_benchmark.py
+python scripts/generate_instance_benchmark.py --config configs/instance_benchmark_smoke.example.json
+```
+
+Outputs land in `testdataset/instance/` (or the config `dataset_dir`).
+
+### 2. Run the instance benchmark
+
+```bash
+python scripts/benchmark_instance_segmentation.py \
+  --dataset_dir testdataset/instance \
+  --out_csv output/benchmark_instance.csv \
+  --algorithms scanline
+```
+
+Optional TreeLearn (needs a pipeline YAML):
+
+```bash
+python scripts/benchmark_instance_segmentation.py \
+  --algorithms scanline,treelearn \
+  --treelearn_config path/to/treelearn.yaml
+```
+
+Metrics use Hungarian matching of predicted vs GT instances at IoU 0.5 (precision / recall / F1 / PQ), summarized by `density_class` × `composition`.
+
 ## Dataset File Convention
 
-Each tile in `testdataset/single/` uses the prefix `{species}_tile_{id}`:
+### Single-tree wood/leaf tiles (`testdataset/single/`)
+
+Each tile uses the prefix `{species}_tile_{id}`:
 
 | File | Description |
 |------|-------------|
@@ -182,6 +242,21 @@ Each tile in `testdataset/single/` uses the prefix `{species}_tile_{id}`:
 | `*_gt.json` / `*_gt.txt` | Scene cylinder skeleton (10 columns per row) |
 | `*_meta.json` | Scan positions, noise params, tile metadata |
 | `*_labels.npy` | Binary wood/leaf labels (created by `label_gt_points.py`) |
+
+### Multi-tree instance tiles (`testdataset/instance/`)
+
+Prefix `{density}_{composition}_{…}` (e.g. `dense_mixed_03`, `sparse_mono_quaking_aspen_01`):
+
+| File | Description |
+|------|-------------|
+| `*_scan.laz` | Simulated TLS point cloud with intensity |
+| `*_instances.npy` | Per-point tree instance ID (`int32`; ground=`-1`) |
+| `*_face_tree_ids.npy` | Per-triangle instance map for the scene mesh |
+| `*_scene.ply` | Full leaf-on scene mesh (optional debug) |
+| `*_trunk.ply` | Merged leafless wood mesh |
+| `*_gt.json` / `*_gt.txt` | Cylinder skeleton with `tree_instance_id` |
+| `*_meta.json` | Density, composition, species list, NN spacing, scans |
+| `manifest.json` | Dataset-level summary |
 
 Current GT cylinder format: `[start_x, start_y, start_z, radius, axis_x, axis_y, axis_z, length, tree_instance_id, branch_id]`. The benchmark also accepts legacy 9-column files. `branch_id` is a mesh-component identifier, not topological branch order.
 
@@ -217,6 +292,8 @@ Notable Arbaro XML parameters: `Scale`, `ScaleV`, `BaseSize`, `Ratio`, `RatioPow
 ## Benchmarking Reference
 
 `benchmark_separation.py` evaluates wood/leaf separation against GT skeletons sampled from cylinder surfaces. Metrics are computed in voxel space separately for **trunk** (radius ≥ threshold) and **canopy** regions.
+
+`benchmark_instance_segmentation.py` evaluates tree **instance** IDs against `*_instances.npy` using Hungarian matching at IoU 0.5 (precision, recall, F1, panoptic-style PQ), broken down by density stratum and mixed/mono composition. Preprocessing is normalize → CSF ground removal → intensity filter; **RGI leaf removal is off by default** (pass `--leaf_removal` to enable).
 
 **Key arguments:**
 

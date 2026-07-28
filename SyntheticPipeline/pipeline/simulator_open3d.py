@@ -2,7 +2,7 @@ import numpy as np
 import argparse
 import warnings
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
 
 try:
     import open3d as o3d
@@ -15,11 +15,16 @@ except ImportError:
     warnings.warn("laspy is not installed. Please 'pip install laspy lazrs' for .laz support.")
 
 from .simulator_base import BaseLiDARSimulator
+from .forest_assembler import GROUND_INSTANCE_ID
+
 
 class Open3DSimulator(BaseLiDARSimulator):
     """
     Simulates a Terrestrial Laser Scanner (TLS) using Open3D's raycasting engine.
     Supports distance noise, beam divergence proxy (spatial jitter), and wind sway.
+
+    When ``face_tree_ids`` is provided, also writes per-hit instance labels
+    (``{output_filename}_instances.npy``) by mapping ray ``primitive_ids``.
     """
     def __init__(self, output_dir: str = "SyntheticPipeline/output/pointclouds"):
         super().__init__(output_dir)
@@ -63,27 +68,47 @@ class Open3DSimulator(BaseLiDARSimulator):
         mesh_path: str, 
         scan_positions: List[List[float]], 
         noise_params: Dict[str, float], 
-        output_filename: str = "simulated_scan"
+        output_filename: str = "simulated_scan",
+        face_tree_ids: Optional[Union[np.ndarray, str, Path]] = None,
+        instances_output_path: Optional[Union[str, Path]] = None,
     ) -> Optional[str]:
         """
         Performs raycasting from specified scan positions onto a target mesh.
         
         Args:
-            mesh_path (str): Path to the target scene mesh (.ply or .obj).
-            scan_positions (List[List[float]]): List of scanner origins [x, y, z].
-            noise_params (Dict[str, float]): Dictionary containing noise configuration.
-            output_filename (str): Name of the output LAZ file (without extension).
+            mesh_path: Path to the target scene mesh (.ply or .obj).
+            scan_positions: List of scanner origins [x, y, z].
+            noise_params: Dictionary containing noise configuration.
+            output_filename: Name of the output LAZ file (without extension).
+            face_tree_ids: Per-triangle instance IDs matching mesh face order
+                (array, or path to ``.npy``). Ground faces should be ``-1``.
+            instances_output_path: Optional explicit path for ``*_instances.npy``.
+                Defaults to ``{output_dir}/{output_filename}_instances.npy``.
             
         Returns:
-            Optional[str]: Path to the generated LAZ file, or None if it failed.
+            Path to the generated LAZ file, or None if it failed.
         """
         assert len(scan_positions) > 0, "Must provide at least one scan position."
         if not Path(mesh_path).exists():
             warnings.warn(f"Mesh file not found: {mesh_path}")
             return None
 
+        face_ids_arr = None
+        if face_tree_ids is not None:
+            if isinstance(face_tree_ids, (str, Path)):
+                face_ids_arr = np.load(str(face_tree_ids))
+            else:
+                face_ids_arr = np.asarray(face_tree_ids)
+            face_ids_arr = face_ids_arr.astype(np.int32)
+
         print(f"Loading mesh: {mesh_path}")
         base_mesh = o3d.io.read_triangle_mesh(str(mesh_path))
+        num_triangles = len(base_mesh.triangles)
+        if face_ids_arr is not None and len(face_ids_arr) != num_triangles:
+            raise ValueError(
+                f"face_tree_ids length ({len(face_ids_arr)}) does not match "
+                f"mesh triangle count ({num_triangles})"
+            )
         
         wind_x = noise_params.get("wind_x", 0.0)
         wind_y = noise_params.get("wind_y", 0.0)
@@ -93,6 +118,7 @@ class Open3DSimulator(BaseLiDARSimulator):
         max_height = bounds_max[2] if bounds_max[2] > 1.0 else 1.0
         
         all_points = []
+        all_instance_ids = []
         
         for pos_idx, origin in enumerate(scan_positions):
             print(f"Scanning from position {pos_idx+1}/{len(scan_positions)}: {origin}")
@@ -173,6 +199,14 @@ class Open3DSimulator(BaseLiDARSimulator):
             # Combine coordinates and intensity into 4-column array
             points_with_intensity = np.hstack([points, intensities[:, np.newaxis]])
             all_points.append(points_with_intensity)
+
+            if face_ids_arr is not None:
+                prim_ids = ans["primitive_ids"].numpy()[hit_mask].astype(np.int64)
+                # Open3D uses a large sentinel for invalid hits; filter defensively
+                valid_prim = (prim_ids >= 0) & (prim_ids < len(face_ids_arr))
+                inst = np.full(prim_ids.shape, GROUND_INSTANCE_ID, dtype=np.int32)
+                inst[valid_prim] = face_ids_arr[prim_ids[valid_prim]]
+                all_instance_ids.append(inst)
             
         # Merge all scan positions
         if not all_points:
@@ -198,6 +232,24 @@ class Open3DSimulator(BaseLiDARSimulator):
         out_path = self.output_dir / f"{output_filename}.laz"
         las.write(str(out_path))
         print(f"Saved simulated point cloud ({len(las.x)} points) to: {out_path}")
+
+        if face_ids_arr is not None and all_instance_ids:
+            instances = np.concatenate(all_instance_ids).astype(np.int32)
+            if len(instances) != len(coords):
+                raise RuntimeError(
+                    f"Instance label count ({len(instances)}) != point count ({len(coords)})"
+                )
+            if instances_output_path is None:
+                instances_path = self.output_dir / f"{output_filename}_instances.npy"
+            else:
+                instances_path = Path(instances_output_path)
+            instances_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(str(instances_path), instances)
+            print(
+                f"Saved instance labels ({len(instances)} pts, "
+                f"{len(np.unique(instances[instances >= 0]))} trees) to: {instances_path}"
+            )
+
         return out_path
 
 if __name__ == "__main__":
@@ -206,6 +258,8 @@ if __name__ == "__main__":
     parser.add_argument("--out_name", type=str, default="simulated_scan")
     parser.add_argument("--num_scans", type=int, default=5)
     parser.add_argument("--area_size", type=float, default=200.0)
+    parser.add_argument("--face_tree_ids", type=str, default=None,
+                        help="Optional path to {scene}_face_tree_ids.npy")
     args = parser.parse_args()
     
     sim = Open3DSimulator()
@@ -226,4 +280,10 @@ if __name__ == "__main__":
         "voxel_downsample_size": 0.01 # 1cm grid
     }
     
-    sim.scan(args.mesh_path, positions, noise, args.out_name)
+    sim.scan(
+        args.mesh_path,
+        positions,
+        noise,
+        args.out_name,
+        face_tree_ids=args.face_tree_ids,
+    )
