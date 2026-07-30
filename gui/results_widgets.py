@@ -1031,6 +1031,11 @@ class ResultsPage(QWidget):
             self._info_label.setText(str(self._run_dir))
             self.status_message.emit(f"Loaded: {self._run_dir.name}")
 
+        # Auto-show the point cloud so selecting (or switching) a run renders
+        # immediately instead of leaving a blank viewer that waits for a click.
+        if self._cloud is not None:
+            self._show_cloud()
+
     # ── View toolbar helpers ──────────────────────────────────────────────────
 
     def _show_toolbar_for(self, mode: str) -> None:
