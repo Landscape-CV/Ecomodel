@@ -170,6 +170,13 @@ def run_ecomodel_lite_pipeline(
         segmenter_type=config.lite_segmenter_type,
         treelearn_config_path=config.treelearn_config_path,
         treelearn_use_gpu=config.treelearn_use_gpu,
+        pointsam_ckpt=getattr(config, "pointsam_ckpt", ""),
+        pointsam_config=getattr(config, "pointsam_config", "large"),
+        pointsam_use_gpu=getattr(config, "pointsam_use_gpu", True),
+        snap_ckpt=getattr(config, "snap_ckpt", ""),
+        snap_domain=getattr(config, "snap_domain", "Outdoor"),
+        snap_grid_size=getattr(config, "snap_grid_size", 0.05),
+        snap_use_gpu=getattr(config, "snap_use_gpu", True),
     )
 
     # ── Process tiles ─────────────────────────────────────────────────────────

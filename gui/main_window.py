@@ -205,15 +205,20 @@ class EcomodelMainWindow(QMainWindow):
 
         ll.addWidget(QLabel("Segmenter:"), 1, 0)
         self._lite_segmenter = QComboBox()
-        self._lite_segmenter.addItems(["Scanline (default)", "TreeLearn (neural net)"])
+        self._lite_segmenter.addItems([
+            "Scanline (default)",
+            "TreeLearn (neural net)",
+            "Point-SAM",
+            "SNAP",
+        ])
         self._lite_segmenter.setToolTip(
             "Scanline: fast geometric segmenter.\n"
-            "TreeLearn: deep-learning segmenter - handles overlapping canopy better "
-            "but requires a GPU and pre-downloaded model weights."
+            "TreeLearn: deep-learning segmenter - overlapping canopy; needs GPU + weights.\n"
+            "Point-SAM / SNAP: promptable 3D models (automatic seed clicks in pipeline)."
         )
         ll.addWidget(self._lite_segmenter, 1, 1)
 
-        # ── TreeLearn sub-controls (hidden when Scanline selected) ────────────
+        # ── TreeLearn sub-controls ────────────────────────────────────────────
         self._treelearn_widget = QWidget()
         tlw = QGridLayout(self._treelearn_widget)
         tlw.setContentsMargins(0, 0, 0, 0)
@@ -241,13 +246,41 @@ class EcomodelMainWindow(QMainWindow):
         self._treelearn_widget.setVisible(False)
         ll.addWidget(self._treelearn_widget, 2, 0, 1, 2)
 
+        # ── Point-SAM / SNAP checkpoint controls ─────────────────────────────
+        self._promptable_widget = QWidget()
+        pw = QGridLayout(self._promptable_widget)
+        pw.setContentsMargins(0, 0, 0, 0)
+
+        pw.addWidget(QLabel("Point-SAM ckpt:"), 0, 0)
+        self._pointsam_ckpt = QLineEdit(self._defaults.pointsam_ckpt)
+        self._pointsam_ckpt.setPlaceholderText("thirdparty/checkpoints/point_sam/*.safetensors")
+        pw.addWidget(self._pointsam_ckpt, 0, 1)
+        _ps_browse = QPushButton("Browse…")
+        _ps_browse.clicked.connect(self._browse_pointsam_ckpt)
+        pw.addWidget(_ps_browse, 0, 2)
+
+        pw.addWidget(QLabel("SNAP ckpt:"), 1, 0)
+        self._snap_ckpt = QLineEdit(self._defaults.snap_ckpt)
+        self._snap_ckpt.setPlaceholderText("thirdparty/checkpoints/snap/SNAP_C.pth")
+        pw.addWidget(self._snap_ckpt, 1, 1)
+        _sn_browse = QPushButton("Browse…")
+        _sn_browse.clicked.connect(self._browse_snap_ckpt)
+        pw.addWidget(_sn_browse, 1, 2)
+
+        self._promptable_gpu = QCheckBox("Use GPU (CUDA)")
+        self._promptable_gpu.setChecked(True)
+        pw.addWidget(self._promptable_gpu, 2, 0, 1, 3)
+
+        self._promptable_widget.setVisible(False)
+        ll.addWidget(self._promptable_widget, 3, 0, 1, 2)
+
         self._lite_segmenter.currentIndexChanged.connect(self._on_segmenter_changed)
 
-        ll.addWidget(QLabel("QSM Method:"), 3, 0)
+        ll.addWidget(QLabel("QSM Method:"), 4, 0)
         self._lite_qsm_method = QComboBox()
         self._lite_qsm_method.addItems(["TreeQSM", "SmartQSM"])
         self._lite_qsm_method.setToolTip("SmartQSM is an external tool installed separately.")
-        ll.addWidget(self._lite_qsm_method, 3, 1)
+        ll.addWidget(self._lite_qsm_method, 4, 1)
 
         self._smartqsm_widget = QWidget()
         sqw = QGridLayout(self._smartqsm_widget)
@@ -274,7 +307,7 @@ class EcomodelMainWindow(QMainWindow):
         sqw.addWidget(self._smartqsm_config, 2, 1)
         sqw.addWidget(_sq_cb, 2, 2)
         self._smartqsm_widget.setVisible(False)
-        ll.addWidget(self._smartqsm_widget, 4, 0, 1, 2)
+        ll.addWidget(self._smartqsm_widget, 5, 0, 1, 2)
         self._lite_qsm_method.currentIndexChanged.connect(self._on_lite_qsm_method_changed)
 
         lg.setVisible(False)
@@ -755,9 +788,18 @@ class EcomodelMainWindow(QMainWindow):
             lite_patch_diam2_min=self._lite_patch_diam2_min.value(),
             lite_patch_diam2_max=self._lite_patch_diam2_max.value(),
             lite_ball_rad2=self._lite_ball_rad2.value(),
-            lite_segmenter_type="treelearn" if self._lite_segmenter.currentIndex() == 1 else "scanline",
+            lite_segmenter_type=["scanline", "treelearn", "pointsam", "snap"][
+                self._lite_segmenter.currentIndex()
+            ],
             treelearn_config_path=self._treelearn_config.text().strip(),
             treelearn_use_gpu=self._treelearn_gpu.isChecked(),
+            pointsam_ckpt=self._pointsam_ckpt.text().strip(),
+            pointsam_config=self._defaults.pointsam_config,
+            pointsam_use_gpu=self._promptable_gpu.isChecked(),
+            snap_ckpt=self._snap_ckpt.text().strip(),
+            snap_domain=self._defaults.snap_domain,
+            snap_grid_size=self._defaults.snap_grid_size,
+            snap_use_gpu=self._promptable_gpu.isChecked(),
             lite_qsm_method="smartqsm" if self._lite_qsm_method.currentIndex() == 1 else "treeqsm",
             smartqsm_dir=self._smartqsm_dir.text().strip(),
             smartqsm_python=self._smartqsm_python.text().strip(),
@@ -878,8 +920,29 @@ class EcomodelMainWindow(QMainWindow):
         self._rgi_use_curvature.setChecked(d.rgi_use_curvature_test)
 
     def _on_segmenter_changed(self, index: int) -> None:
-        """Show TreeLearn controls only when TreeLearn segmenter is selected."""
+        """Show TreeLearn or Point-SAM/SNAP controls based on selection."""
         self._treelearn_widget.setVisible(index == 1)
+        self._promptable_widget.setVisible(index in (2, 3))
+
+    def _browse_pointsam_ckpt(self) -> None:
+        p, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Point-SAM checkpoint",
+            self._pointsam_ckpt.text() or "",
+            "Weights (*.safetensors *.pt *.pth);;All files (*)",
+        )
+        if p:
+            self._pointsam_ckpt.setText(p)
+
+    def _browse_snap_ckpt(self) -> None:
+        p, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select SNAP checkpoint",
+            self._snap_ckpt.text() or "",
+            "Weights (*.pth *.pt);;All files (*)",
+        )
+        if p:
+            self._snap_ckpt.setText(p)
 
     def _on_lite_qsm_method_changed(self, index: int) -> None:
         """Show SmartQSM path controls; cover sets are TreeQSM-only."""

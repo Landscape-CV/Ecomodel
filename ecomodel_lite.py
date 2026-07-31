@@ -20,6 +20,7 @@ from pathlib import Path
 import time
 from TreeQSMSteps.cover_sets import cover_sets
 from ecomodel_segmenters import SegmenterScanline, SegmenterTreeLearn
+from ecomodel_promptable_segmenters import SegmenterPointSAM, SegmenterSNAP
 from Utils.define_input import define_input
 from treeqsm import treeqsm
 from TreeQSMSteps.cover_sets import cover_sets
@@ -172,9 +173,16 @@ class EcomodelLite:
         patch_diam2_max=0.08,
         ball_rad2=0.09,
         # ── Instance segmenter ──────────────────────────────────────────────
-        segmenter_type="scanline",       # "scanline" | "treelearn"
+        segmenter_type="scanline",       # "scanline" | "treelearn" | "pointsam" | "snap"
         treelearn_config_path="",
         treelearn_use_gpu=True,
+        pointsam_ckpt="",
+        pointsam_config="large",
+        pointsam_use_gpu=True,
+        snap_ckpt="",
+        snap_domain="Outdoor",
+        snap_grid_size=0.05,
+        snap_use_gpu=True,
     ):
         super().__init__()
         if not os.path.isdir(results_folder):
@@ -224,6 +232,25 @@ class EcomodelLite:
             self.segmenter = SegmenterTreeLearn(
                 config_path=treelearn_config_path,
                 use_gpu=treelearn_use_gpu,
+            )
+        elif segmenter_type == "pointsam":
+            if not pointsam_ckpt:
+                raise ValueError(
+                    "pointsam_ckpt must be set when segmenter_type='pointsam'"
+                )
+            self.segmenter = SegmenterPointSAM(
+                checkpoint_path=pointsam_ckpt,
+                config_name=pointsam_config or "large",
+                use_gpu=pointsam_use_gpu,
+            )
+        elif segmenter_type == "snap":
+            if not snap_ckpt:
+                raise ValueError("snap_ckpt must be set when segmenter_type='snap'")
+            self.segmenter = SegmenterSNAP(
+                checkpoint_path=snap_ckpt,
+                domain=snap_domain or "Outdoor",
+                grid_size=float(snap_grid_size),
+                use_gpu=snap_use_gpu,
             )
         else:
             self.segmenter = SegmenterScanline()
@@ -396,21 +423,26 @@ class EcomodelLite:
 
         return only_wood
 
-    def perform_instance_segmentation(self, point_cloud, output_dir=None):
+    def perform_instance_segmentation(self, point_cloud, output_dir=None, prompts=None):
         """
         Performs instance segmentation.
 
         Parameters
         ----------
         point_cloud : np.ndarray
-            Wood-only point cloud (N×4).
+            Point cloud (N×4), typically after CSF (+ optional leaf removal).
         output_dir : str, optional
-            Tile output directory.  Required when segmenter_type == 'treelearn'
-            so TreeLearn can write its intermediate files there.
+            Tile output directory for segmenters that write intermediates.
+        prompts : list of (3,) arrays, optional
+            Click prompts for Point-SAM / SNAP. None → automatic seeds.
         """
         print("Performing Instance Segmentation....")
         if self.segmenter_type == "treelearn":
             point_cloud, labels = self.segmenter.segment(point_cloud, output_dir)
+        elif self.segmenter_type in ("pointsam", "snap"):
+            point_cloud, labels = self.segmenter.segment(
+                point_cloud, output_dir=output_dir, prompts=prompts
+            )
         else:
             point_cloud, labels = self.segmenter.process(point_cloud)
 

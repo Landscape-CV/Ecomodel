@@ -51,3 +51,16 @@ __pycache__/
 thirdparty/AdTree/**
 !thirdparty/AdTree/
 !thirdparty/AdTree/README.md
+
+# Point-SAM / SNAP clones + weights (download locally; keep README only)
+thirdparty/Point-SAM/**
+!thirdparty/Point-SAM/
+!thirdparty/Point-SAM/README.md
+!thirdparty/Point-SAM/INSTALL_ECOMODEL.md
+thirdparty/SNAP/**
+!thirdparty/SNAP/
+!thirdparty/SNAP/README.md
+!thirdparty/SNAP/INSTALL_ECOMODEL.md
+thirdparty/checkpoints/**
+!thirdparty/checkpoints/
+!thirdparty/checkpoints/README.md
