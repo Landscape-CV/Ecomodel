@@ -67,10 +67,11 @@ benchmark_instance_segmentation.py  →  Hungarian F1 / PQ by density stratum
 - `generate_instance_benchmark.py` — Multi-tree / multi-species instance-segmentation tiles
 - `label_gt_points.py` — Labels scan points as wood (1) or leaf (0) from trunk mesh distance
 - `benchmark_separation.py` — Runs separation algorithms and writes metrics CSV
-- `benchmark_instance_segmentation.py` — Scores Scanline / TreeLearn instance IDs vs GT
+- `benchmark_instance_segmentation.py` — Scores Scanline / TreeLearn / Point-SAM / SNAP vs GT (auto + oracle prompts)
 - `benchmark_qsm.py` — Compares TreeQSM, SmartQSM, and optional AdTree/aRchi under leaf-on, RGI, and oracle inputs
 - `plot_species_performance.py` — Bar charts of trunk metrics grouped by species
 - `plot_benchmark_qsm.py` — Plots successful QSM benchmark rows
+- `plot_benchmark_instance.py` — Plots instance-segmentation F1/PQ/PR by density & composition
 
 ### `evaluation/`
 
@@ -212,23 +213,87 @@ Outputs land in `testdataset/instance/` (or the config `dataset_dir`).
 
 ### 2. Run the instance benchmark
 
+Four methods are supported: **Scanline**, **TreeLearn**, **Point-SAM**, **SNAP**.
+Point-SAM / SNAP are promptable; the benchmark reports **automatic seeds** and optional **GT-oracle click** ablation (`--prompt_mode both`).
+
+Install Point-SAM / SNAP first (see below). Leaf removal is **off** by default.
+
+**Stratified 16-tile sample** (recommended for comparing methods):
+
 ```bash
 python scripts/benchmark_instance_segmentation.py \
   --dataset_dir testdataset/instance \
-  --out_csv output/benchmark_instance.csv \
-  --algorithms scanline
-```
-
-Optional TreeLearn (needs a pipeline YAML):
-
-```bash
-python scripts/benchmark_instance_segmentation.py \
-  --algorithms scanline,treelearn \
+  --algorithms scanline,treelearn,pointsam,snap \
+  --prompt_mode both \
+  --stratify 16 --seed 0 \
+  --out_csv output/benchmark_instance_4method.csv \
+  --pointsam_ckpt ../thirdparty/checkpoints/point_sam/model.safetensors \
+  --snap_ckpt ../thirdparty/checkpoints/snap/SNAP_C.pth \
   --treelearn_config path/to/treelearn.yaml
 ```
 
-Metrics use Hungarian matching of predicted vs GT instances at IoU 0.5 (precision / recall / F1 / PQ), summarized by `density_class` × `composition`.
+**Full 64-tile suite:**
 
+```bash
+python scripts/benchmark_instance_segmentation.py \
+  --dataset_dir testdataset/instance \
+  --algorithms scanline,treelearn,pointsam,snap \
+  --prompt_mode both \
+  --out_csv output/benchmark_instance_4method_full.csv \
+  --pointsam_ckpt ../thirdparty/checkpoints/point_sam/model.safetensors \
+  --snap_ckpt ../thirdparty/checkpoints/snap/SNAP_C.pth
+```
+
+Metrics: Hungarian matching at IoU 0.5 (precision / recall / F1 / PQ) by `density_class` × `composition`.
+
+Plot successful rows (QSM-style PNGs under `output/visualizations/`):
+
+```bash
+python scripts/plot_benchmark_instance.py \
+  --csv output/benchmark_instance_4method_full.csv \
+  --out output/visualizations/benchmark_instance_4method_full.png
+```
+
+### Installing Point-SAM and SNAP
+
+Clone + weights live under the parent repo `thirdparty/` (gitignored except install notes).
+
+**This machine (Windows, RTX 5070 Ti / Blackwell, CUDA toolkit 13.3, PyTLidar 3.11 venv + torch `cu128`):** follow the full recipes — they document the working `torkit3d` build, `torch-scatter` source build, and Blackwell `spconv-cu128` wheels:
+
+| Method | Install notes | Checkpoint |
+|--------|---------------|------------|
+| [Point-SAM](https://github.com/zyc00/Point-SAM) | [`thirdparty/Point-SAM/INSTALL_ECOMODEL.md`](../thirdparty/Point-SAM/INSTALL_ECOMODEL.md) — build `torkit3d` with CUDA 13.3 + `TORCH_CUDA_ARCH_LIST=12.0`; apex optional | HuggingFace `yuchen0187/Point-SAM` → `thirdparty/checkpoints/point_sam/model.safetensors` |
+| [SNAP](https://github.com/neu-vi/SNAP) | [`thirdparty/SNAP/INSTALL_ECOMODEL.md`](../thirdparty/SNAP/INSTALL_ECOMODEL.md) — source `torch-scatter`, `spconv-cu128`/`cumm-cu128`, Outdoor domain, `grid_size=0.05` | [SNAP Outdoor / C](https://github.com/neu-vi/SNAP#checkpoints) → `thirdparty/checkpoints/snap/SNAP_C.pth` |
+| TreeLearn | Existing TreeLearn YAML + `.pth` weights | `--treelearn_config` |
+
+Quick Point-SAM weight download (after clone):
+
+```powershell
+hf download yuchen0187/Point-SAM --local-dir thirdparty/checkpoints/point_sam
+```
+
+Lite GUI: **Segmenter** combo includes Point-SAM and SNAP (checkpoint path fields appear when selected).
+
+### Stratified results (16 tiles, leaf-on, seed=0)
+
+Earlier Scanline-only numbers (before Point-SAM/SNAP were configured) are below. Re-run with all methods after following the install guides; full 64-tile CSV: `output/benchmark_instance_4method_full.csv`.
+
+**Scanline (automatic) — mean F1 / P / R / PQ by stratum** (`--stratify 16 --seed 0`, leaf-on):
+
+| density | composition | P | R | F1 | PQ |
+| --- | --- | --- | --- | --- | --- |
+| sparse | mixed | 0.375 | 1.000 | 0.533 | 0.400 |
+| sparse | mono | 0.526 | 0.833 | 0.600 | 0.519 |
+| moderate | mixed | 0.380 | 0.778 | 0.480 | 0.369 |
+| moderate | mono | 0.417 | 0.417 | 0.417 | 0.355 |
+| dense | mixed | 0.143 | 0.267 | 0.186 | 0.104 |
+| dense | mono | 0.111 | 0.067 | 0.083 | 0.049 |
+| extreme | mixed | 0.000 | 0.000 | 0.000 | 0.000 |
+| extreme | mono | 0.100 | 0.033 | 0.050 | 0.033 |
+
+CSV artifacts: `output/benchmark_instance_4method.csv`, `_summary.csv`, `_summary.md`.
+
+**TreeLearn** still skipped without `--treelearn_config`.
 ## Dataset File Convention
 
 ### Single-tree wood/leaf tiles (`testdataset/single/`)
@@ -293,7 +358,7 @@ Notable Arbaro XML parameters: `Scale`, `ScaleV`, `BaseSize`, `Ratio`, `RatioPow
 
 `benchmark_separation.py` evaluates wood/leaf separation against GT skeletons sampled from cylinder surfaces. Metrics are computed in voxel space separately for **trunk** (radius ≥ threshold) and **canopy** regions.
 
-`benchmark_instance_segmentation.py` evaluates tree **instance** IDs against `*_instances.npy` using Hungarian matching at IoU 0.5 (precision, recall, F1, panoptic-style PQ), broken down by density stratum and mixed/mono composition. Preprocessing is normalize → CSF ground removal → intensity filter; **RGI leaf removal is off by default** (pass `--leaf_removal` to enable).
+`benchmark_instance_segmentation.py` evaluates tree **instance** IDs against `*_instances.npy` using Hungarian matching at IoU 0.5 (precision, recall, F1, panoptic-style PQ), broken down by density stratum and mixed/mono composition. Preprocessing is normalize → CSF ground removal → intensity filter; **RGI leaf removal is off by default** (pass `--leaf_removal` to enable). Algorithms: `scanline`, `treelearn`, `pointsam`, `snap` (+ `*_oracle` GT-click ablations via `--prompt_mode`).
 
 **Key arguments:**
 

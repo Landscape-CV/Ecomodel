@@ -115,9 +115,16 @@ class EcomodelConfig:
     # RGI params are shared with the full pipeline (same library, same defaults)
 
     # ── Lite: instance segmenter ──────────────────────────────────────────────
-    lite_segmenter_type: str = "scanline"   # "scanline" | "treelearn"
+    lite_segmenter_type: str = "scanline"   # "scanline" | "treelearn" | "pointsam" | "snap"
     treelearn_config_path: str = ""         # path to TreeLearn YAML config
     treelearn_use_gpu: bool = True          # use CUDA; False = CPU (very slow)
+    pointsam_ckpt: str = ""                 # Point-SAM .safetensors checkpoint
+    pointsam_config: str = "large"          # hydra config name under thirdparty/Point-SAM/configs
+    pointsam_use_gpu: bool = True
+    snap_ckpt: str = ""                     # SNAP .pth checkpoint
+    snap_domain: str = "Outdoor"            # Indoor | Outdoor | Aerial
+    snap_grid_size: float = 0.05
+    snap_use_gpu: bool = True
 
     # ── Lite: QSM method ──────────────────────────────────────────────────────
     lite_qsm_method: str = "treeqsm"        # "treeqsm" | "smartqsm"
