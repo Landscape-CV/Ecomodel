@@ -10,7 +10,7 @@ from SegmentRGI.SegmentRGI import classify_wood_leaf
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from plyfile import PlyData, PlyElement
-from Utils.plot_tools import SimplePlotter
+from plot_tools import SimplePlotter
 import open3d as o3d
 import networkx as nx
 import cc3d
@@ -24,10 +24,10 @@ import matplotlib.pyplot as plt
 from copy import deepcopy
 import mistree as mist
 from Utils.Utils import load_point_cloud
-from Utils.plot_tools import  ResultsPlotter
+from plot_tools import  ResultsPlotter
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
-from Utils.RobustCylinderFitting import RobustCylinderFitter
+from RobustCylinderFitting import RobustCylinderFitter
 from scipy.spatial.distance import pdist
 from sklearn.cluster import DBSCAN
 import pyvista as pv
@@ -37,7 +37,7 @@ import torch
 # John
 import time
 from TreeQSMSteps.cover_sets import cover_sets
-from Utils.TreeSegmentation import segment_point_cloud
+from TreeSegmentation import segment_point_cloud
 from ecomodel import Tile
         
 

@@ -10,7 +10,7 @@ from SegmentRGI.SegmentRGI import classify_wood_leaf
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from plyfile import PlyData, PlyElement
-from Utils.plot_tools import SimplePlotter
+from plot_tools import SimplePlotter
 import open3d as o3d
 import cc3d
 from copy import deepcopy
@@ -28,7 +28,7 @@ from TreeQSMSteps.correct_segments import correct_segments
 from TreeQSMSteps.tree_sets import tree_sets
 from TreeQSMSteps.relative_size import relative_size
 from TreeQSMSteps.cylinders import cylinders
-from Utils.tree_metrics import compute_tree_metrics
+from tree_metrics import compute_tree_metrics
 import logging
 
 logger = logging.getLogger("Ecomodel")

@@ -16,10 +16,10 @@ from TreeQSMSteps.segments import segments
 from TreeQSMSteps.correct_segments import correct_segments
 from TreeQSMSteps.tree_sets import tree_sets
 from TreeQSMSteps.relative_size import relative_size
-from Utils.TreeSegmentation import segment_point_cloud
+from TreeSegmentation import segment_point_cloud
 from TreeQSMSteps.cylinders import cylinders
 from TreeQSMSteps.point_model_distance import point_model_distance
-from Utils.tree_metrics import compute_tree_metrics
+from tree_metrics import compute_tree_metrics
 from Utils.define_input import define_input
 from plotting.cylinders_line_plotting import cylinders_line_plotting
 from plotting.point_cloud_plotting import point_cloud_plotting
@@ -42,7 +42,7 @@ from GBSeparation.remove_leaves import LeafRemover
 from robpy.covariance import DetMCD,FastMCD
 from sklearn.covariance import MinCovDet
 import CSF
-from Utils.plot_tools import ResultsPlotter
+from plot_tools import ResultsPlotter
 import logging
 import argparse
 import traceback
@@ -73,7 +73,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from plyfile import PlyData, PlyElement
 
-from Utils.RobustCylinderFitting import RobustCylinderFitterEcomodel
+from RobustCylinderFitting import RobustCylinderFitterEcomodel
 dotenv.load_dotenv()
 
 class Ecomodel:

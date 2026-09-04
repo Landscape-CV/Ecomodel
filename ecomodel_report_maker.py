@@ -1,7 +1,7 @@
 from reportlab.lib.pagesizes import letter, landscape, A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
-from Utils.plot_tools import ResultsPlotter
+from plot_tools import ResultsPlotter
 import numpy as np
 from pathlib import Path
 import os
