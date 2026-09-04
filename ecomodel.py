@@ -1067,11 +1067,8 @@ class Ecomodel:
 
                     tree_cloud = tree_cloud
                     tree_no_leaves = tree
-                    self.save_point_cloud(f"segment_{segment}_before_treeqsm", tree_no_leaves)
-
-                    # if save_leaf_removal_output:
-
-                    continue
+                    if save_leaf_removal_output:
+                        self.save_point_cloud(f"segment_{segment}_before_treeqsm", tree_no_leaves)
 
                 except Exception as e:
                     logger.warning(f"[WARNING] classify_wood_leaf() failed on segment {segment}: {e}")
