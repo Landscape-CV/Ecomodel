@@ -764,14 +764,17 @@ class Ecomodel:
                 # Read back the classified clouds
                 wood_file = tmp_results / "segment_wood.ply"
                 leaf_file = tmp_results / "segment_leaves.ply"
-                if not wood_file.exists() or not leaf_file.exists():
-                    raise FileNotFoundError("Wood/Leaf outputs not found after classification.")
+                if not wood_file.exists():
+                    raise FileNotFoundError("Wood output not found after classification.")
 
-                wood_pcd = o3d.io.read_point_cloud(str(wood_file))
-                leaf_pcd = o3d.io.read_point_cloud(str(leaf_file))
                 tree_coords = np.asarray(tree_cloud[:, :3])
-                wood_coords = np.asarray(wood_pcd.points)
-                leaf_coords = np.asarray(leaf_pcd.points)
+                wood_coords = np.asarray(o3d.io.read_point_cloud(str(wood_file)).points)
+                # SegmentRGI writes no leaves file when every cluster is wood,
+                # which is a tree with nothing to strip, not a failure.
+                if leaf_file.exists():
+                    leaf_coords = np.asarray(o3d.io.read_point_cloud(str(leaf_file)).points)
+                else:
+                    leaf_coords = np.empty((0, 3), dtype=tree_coords.dtype)
 
                 def build_mask(sub_coords):
                     mask = np.isin(
