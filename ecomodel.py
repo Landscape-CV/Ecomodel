@@ -3,6 +3,7 @@ import warnings
 # import sknw
 warnings.filterwarnings('ignore')
 import Utils.Utils as Utils
+import ecomodel_utils
 import numpy as np
 import os
 import torch 
@@ -128,7 +129,7 @@ class Ecomodel:
             if tile.terrain_model is not None:
                 tile.original_data = tile.point_data.copy()
                 print(f"[DEBUG] normalize_raw_tiles: calling subtract_terrain...", flush=True)
-                tile.cloud = Utils.subtract_terrain(tile.cloud,tile.terrain_model,grid_size=tile.grid_size)
+                tile.cloud = ecomodel_utils.subtract_terrain(tile.cloud,tile.terrain_model,grid_size=tile.grid_size)
                 print(f"[DEBUG] normalize_raw_tiles: subtract_terrain done.", flush=True)
 
             tile.cloud[:,:2] = tile.cloud[:,:2] - self.mean[:2]
@@ -334,9 +335,9 @@ class Ecomodel:
             # surface = Utils.get_surface_points(ground_points, grid_size)
             # ground_points = ground_points-np.mean(ground_points,axis=0)#normalize ground points to improve numerical stability
             print(f"[DEBUG] get_terrain_model: calling rasterize_cloud ({len(ground_points)} pts)...", flush=True)
-            surface = Utils.rasterize_cloud(ground_points, grid_size)
+            surface = ecomodel_utils.rasterize_cloud(ground_points, grid_size)
             print(f"[DEBUG] get_terrain_model: rasterize_cloud done, raster shape={surface.shape}, calling fill_raster_gaps...", flush=True)
-            surface = Utils.fill_raster_gaps(surface)
+            surface = ecomodel_utils.fill_raster_gaps(surface)
             print(f"[DEBUG] get_terrain_model: fill_raster_gaps done.", flush=True)
 
             tile.terrain_model = surface
@@ -666,7 +667,7 @@ class Ecomodel:
                         continue
 
                     try:
-                        axis =Utils.get_axis(segment_cloud)
+                        axis =ecomodel_utils.get_axis(segment_cloud)
                     except:
                         continue
 
@@ -679,8 +680,8 @@ class Ecomodel:
                     segment_cloud = segment_cloud[lexsort_indices]
 
 
-                    sub_segments = Utils.split_segments(segment_cloud,6,15)
-                    # sub_segments = Utils.split_segments(rotated_cloud,6,15)
+                    sub_segments = ecomodel_utils.split_segments(segment_cloud,6,15)
+                    # sub_segments = ecomodel_utils.split_segments(rotated_cloud,6,15)
                     while np.sum(sub_segments)>len(sub_segments)/6:
 
                         ss_idx = sub_segments.astype(bool)
@@ -697,11 +698,11 @@ class Ecomodel:
                         segment_cloud = segment_cloud[lexsort_indices]
 
 
-                        sub_segments = Utils.split_segments(segment_cloud,6,15)
+                        sub_segments = ecomodel_utils.split_segments(segment_cloud,6,15)
                         # rotated_cloud= rotated_cloud[ss_idx]
                         # lexsort_indices = np.argsort(rotated_cloud[:, 2])
                         # rotated_cloud = rotated_cloud[lexsort_indices]
-                        # sub_segments = Utils.split_segments(rotated_cloud,6,15)
+                        # sub_segments = ecomodel_utils.split_segments(rotated_cloud,6,15)
 
 
                 cloud_segments = new_cloud_segments+max_segment
