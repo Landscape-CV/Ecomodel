@@ -50,8 +50,8 @@ def compute_tree_metrics(cylinder, tree_cloud, inputs, tree_id) -> "dict | None"
     the QSM input dict for the tree; display/plot/triangulation are forced off.
     """
     try:
-        from TreeQSMSteps.branches import branches
-        from TreeQSMSteps.tree_data import tree_data
+        from PyTLidar.TreeQSMSteps.branches import branches
+        from PyTLidar.TreeQSMSteps.tree_data import tree_data
 
         br = branches(cylinder)
         inp = dict(inputs)

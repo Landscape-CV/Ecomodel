@@ -5,7 +5,7 @@ from plot_tools import ResultsPlotter
 import numpy as np
 from pathlib import Path
 import os
-from Utils.Utils import load_point_cloud
+from PyTLidar.Utils.Utils import load_point_cloud
 
 
 def generate_report(input_folder: str, results_run_dir: str, output_pdf: str) -> int:

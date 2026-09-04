@@ -5,7 +5,7 @@ This module includes a class which streamlines the current ecomodel.
 import random
 import CSF
 import numpy as np
-from Utils.Utils import load_point_cloud
+from PyTLidar.Utils.Utils import load_point_cloud
 from SegmentRGI.SegmentRGI import classify_wood_leaf
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,7 +23,6 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from copy import deepcopy
 import mistree as mist
-from Utils.Utils import load_point_cloud
 from plot_tools import  ResultsPlotter
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
@@ -36,7 +35,7 @@ from pathlib import Path
 import torch
 # John
 import time
-from TreeQSMSteps.cover_sets import cover_sets
+from PyTLidar.TreeQSMSteps.cover_sets import cover_sets
 from TreeSegmentation import segment_point_cloud
 from ecomodel import Tile
         

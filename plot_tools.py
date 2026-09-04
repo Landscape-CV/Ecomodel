@@ -3,7 +3,7 @@ import os
 import pyvista as pv
 import numpy as np
 import matplotlib.pyplot as plt
-from Utils.Utils import load_point_cloud
+from PyTLidar.Utils.Utils import load_point_cloud
 
 
 class SimplePlotter:

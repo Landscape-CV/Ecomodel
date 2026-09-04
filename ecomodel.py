@@ -2,7 +2,6 @@ import warnings
 # from skimage.morphology import skeletonize
 # import sknw
 warnings.filterwarnings('ignore')
-import Utils.Utils as Utils
 import ecomodel_utils
 import numpy as np
 import os
@@ -12,25 +11,22 @@ from sklearn import linear_model
 from sklearn.cluster import DBSCAN
 from sklearn.cluster import k_means
 import matplotlib.pyplot as plt
-from TreeQSMSteps.cover_sets import cover_sets
-from TreeQSMSteps.segments import segments
-from TreeQSMSteps.correct_segments import correct_segments
-from TreeQSMSteps.tree_sets import tree_sets
-from TreeQSMSteps.relative_size import relative_size
+from PyTLidar.TreeQSMSteps.cover_sets import cover_sets
+from PyTLidar.TreeQSMSteps.segments import segments
+from PyTLidar.TreeQSMSteps.correct_segments import correct_segments
+from PyTLidar.TreeQSMSteps.tree_sets import tree_sets
+from PyTLidar.TreeQSMSteps.relative_size import relative_size
 from TreeSegmentation import segment_point_cloud
-from TreeQSMSteps.cylinders import cylinders
-from TreeQSMSteps.point_model_distance import point_model_distance
+from PyTLidar.TreeQSMSteps.cylinders import cylinders
 from tree_metrics import compute_tree_metrics
-from Utils.define_input import define_input
-from plotting.cylinders_line_plotting import cylinders_line_plotting
-from plotting.point_cloud_plotting import point_cloud_plotting
-from plotting.cylinders_plotting import cylinders_plotting
-from plotting.qsm_plotting import qsm_plotting
-import TreeQSMSteps.LSF as LSF
+from PyTLidar.Utils.define_input import define_input
+from PyTLidar.Utils.Utils import load_point_cloud
+from PyTLidar.plotting.cylinders_line_plotting import cylinders_line_plotting
+from PyTLidar.plotting.qsm_plotting import qsm_plotting
 from scipy.spatial import Delaunay
 from scipy.spatial.transform import Rotation 
 from scipy.spatial.distance import cdist
-from treeqsm import treeqsm
+from PyTLidar.treeqsm import treeqsm
 import time
 import cProfile
 import pstats
@@ -1235,6 +1231,10 @@ class Ecomodel:
                     qsm_input['plot'] = 0
                     qsm_input['savepdf'] = 0
                     qsm_input['savetxt'] = 0
+                    # Cylinders come back in the tile frame, the same frame the
+                    # cylinders() paths above store, so the starts can be
+                    # concatenated into tile.cylinder_starts as they are.
+                    qsm_input['zero_base'] = 0
                 except np.linalg.LinAlgError as e:
                     logger.warning(f"Unable to find axis for segment {segment}")
                     tile.segment_labels[segment_mask] = -1
@@ -1735,7 +1735,7 @@ class Ecomodel:
             file = files[0]
             logger.info(f"Loading file: {file}")
             filepath = os.path.join(folder, file)
-            point_cloud, point_data = Utils.load_point_cloud(
+            point_cloud, point_data = load_point_cloud(
                 filepath, intensity_threshold, True,
                 scalar_field=scalar_field, normalize_scalar=normalize_scalar)
             if point_cloud is not None:
@@ -1748,7 +1748,7 @@ class Ecomodel:
             logger.info(f"Loading file {i}/{len(files)}: {file}")
             filepath = os.path.join(folder, file)
 
-            point_cloud, point_data = Utils.load_point_cloud(
+            point_cloud, point_data = load_point_cloud(
                 os.path.join(folder, file), intensity_threshold, True,
                 scalar_field=scalar_field, normalize_scalar=normalize_scalar)
             if point_cloud is not None:
@@ -2257,7 +2257,7 @@ def ecomodel_tile(tile_file_path, results_folder):
     combined_cloud = Ecomodel(results_folder)
     basename = os.path.basename(tile_file_path)
 
-    point_cloud, point_data = Utils.load_point_cloud(tile_file_path, 0, True)
+    point_cloud, point_data = load_point_cloud(tile_file_path, 0, True)
     if point_cloud is not None:
         combined_cloud.add_tile(Tile(point_cloud, point_data, True))
     if combined_cloud is None:

@@ -25,6 +25,10 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+# Names of the scalar columns (3 onward) of tile.point_data. load_point_cloud
+# keeps point_data at (N, 4), so the only scalar column is intensity.
+LAS_FIELD_NAMES = ["Intensity"]
+
 def run_ecomodel_pipeline(
     config: EcomodelConfig,
     log_callback: Optional[Callable[[str], None]] = None,
@@ -223,11 +227,9 @@ def run_ecomodel_pipeline(
         if eco is None or len(eco._raw_tiles) == 0:
             raise FileNotFoundError(f"No LAS/LAZ files found in '{config.input_folder}'.")
 
-        # Capture the field names discovered during LAS loading so they can
-        # be written to the checkpoint sidecar and used at snapshot time.
-        from Utils.Utils import get_last_las_field_names as _get_fields
+        # Record the field names for the checkpoint sidecar and the snapshots.
         _las_field_names.clear()
-        _las_field_names.extend(_get_fields())
+        _las_field_names.extend(LAS_FIELD_NAMES)
         _log(f"Loaded {len(eco._raw_tiles)} raw tile(s).  "
              f"Scalar fields: {', '.join(_las_field_names)}\n")
         for _fname in _las_files:
