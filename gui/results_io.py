@@ -303,7 +303,7 @@ def save_tree_metrics(run_dir: Path, rows: "list[dict]") -> Path:
     Results page can read them back without guessing.  Returns the file path.
     """
     import csv
-    from Utils.tree_metrics import TREE_METRIC_COLS
+    from tree_metrics import TREE_METRIC_COLS
 
     cols = ["tree_id", "tile"] + [c for c in TREE_METRIC_COLS if c != "tree_id"]
     path = Path(run_dir) / TREE_METRICS_FILE

@@ -5,8 +5,7 @@ It takes raw `.las` / `.laz` tiles, removes the ground, separates individual tre
 fits a Quantitative Structure Model (QSM). A QSM is a cylinder skeleton of every trunk and
 branch. You can view it, measure it, and run spatial queries against it in the GUI.
 
-QSM fitting is powered by [TreeQSM](#treeqsm-engine), available here as a standalone Python
-implementation.
+QSM fitting is powered by [TreeQSM](#treeqsm-engine) through the PyTLidar package.
 
 > **Status:** active development. Expect rough edges.
 
@@ -79,7 +78,8 @@ within a radius of a point.
 
 ## TreeQSM engine
 
-The QSM step is a Python port of TreeQSM. It can be used on its own without the GUI:
+The QSM step is [PyTLidar](https://github.com/Landscape-CV/PyTLidar), a Python port of TreeQSM,
+installed from PyPI with the other requirements. It can be used on its own without the GUI:
 
 ```bash
 python -m PyTLidar.treeqsm file.las --normalize        # single file

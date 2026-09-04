@@ -97,7 +97,7 @@ def run_ecomodel_lite_pipeline(
     from ecomodel_lite import EcomodelLite
     from gui.results_io import (make_run_dir, write_run_metadata,
                                 save_point_cloud_snapshot, save_segment_labels_snapshot)
-    from Utils.Utils import load_point_cloud
+    from PyTLidar.Utils.Utils import load_point_cloud
 
     def _log(msg: str) -> None:
         if log_callback:

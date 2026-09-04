@@ -1168,7 +1168,7 @@ class EcomodelMainWindow(QMainWindow):
         if not las_files:
             return
         try:
-            from Utils.Utils import list_las_scalar_fields
+            from PyTLidar.Utils.Utils import list_las_scalar_fields
             import os
             fields = list_las_scalar_fields(os.path.join(folder, las_files[0]))
         except Exception:

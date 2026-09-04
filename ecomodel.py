@@ -2,7 +2,7 @@ import warnings
 # from skimage.morphology import skeletonize
 # import sknw
 warnings.filterwarnings('ignore')
-import Utils.Utils as Utils
+import ecomodel_utils
 import numpy as np
 import os
 import torch 
@@ -11,25 +11,22 @@ from sklearn import linear_model
 from sklearn.cluster import DBSCAN
 from sklearn.cluster import k_means
 import matplotlib.pyplot as plt
-from TreeQSMSteps.cover_sets import cover_sets
-from TreeQSMSteps.segments import segments
-from TreeQSMSteps.correct_segments import correct_segments
-from TreeQSMSteps.tree_sets import tree_sets
-from TreeQSMSteps.relative_size import relative_size
-from Utils.TreeSegmentation import segment_point_cloud
-from TreeQSMSteps.cylinders import cylinders
-from TreeQSMSteps.point_model_distance import point_model_distance
-from Utils.tree_metrics import compute_tree_metrics
-from Utils.define_input import define_input
-from plotting.cylinders_line_plotting import cylinders_line_plotting
-from plotting.point_cloud_plotting import point_cloud_plotting
-from plotting.cylinders_plotting import cylinders_plotting
-from plotting.qsm_plotting import qsm_plotting
-import TreeQSMSteps.LSF as LSF
+from PyTLidar.TreeQSMSteps.cover_sets import cover_sets
+from PyTLidar.TreeQSMSteps.segments import segments
+from PyTLidar.TreeQSMSteps.correct_segments import correct_segments
+from PyTLidar.TreeQSMSteps.tree_sets import tree_sets
+from PyTLidar.TreeQSMSteps.relative_size import relative_size
+from TreeSegmentation import segment_point_cloud
+from PyTLidar.TreeQSMSteps.cylinders import cylinders
+from tree_metrics import compute_tree_metrics
+from PyTLidar.Utils.define_input import define_input
+from PyTLidar.Utils.Utils import load_point_cloud
+from PyTLidar.plotting.cylinders_line_plotting import cylinders_line_plotting
+from PyTLidar.plotting.qsm_plotting import qsm_plotting
 from scipy.spatial import Delaunay
 from scipy.spatial.transform import Rotation 
 from scipy.spatial.distance import cdist
-from treeqsm import treeqsm
+from PyTLidar.treeqsm import treeqsm
 import time
 import cProfile
 import pstats
@@ -42,7 +39,7 @@ from GBSeparation.remove_leaves import LeafRemover
 from robpy.covariance import DetMCD,FastMCD
 from sklearn.covariance import MinCovDet
 import CSF
-from Utils.plot_tools import ResultsPlotter
+from plot_tools import ResultsPlotter
 import logging
 import argparse
 import traceback
@@ -73,7 +70,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from plyfile import PlyData, PlyElement
 
-from Utils.RobustCylinderFitting import RobustCylinderFitterEcomodel
+from RobustCylinderFitting import RobustCylinderFitterEcomodel
 dotenv.load_dotenv()
 
 class Ecomodel:
@@ -128,7 +125,7 @@ class Ecomodel:
             if tile.terrain_model is not None:
                 tile.original_data = tile.point_data.copy()
                 print(f"[DEBUG] normalize_raw_tiles: calling subtract_terrain...", flush=True)
-                tile.cloud = Utils.subtract_terrain(tile.cloud,tile.terrain_model,grid_size=tile.grid_size)
+                tile.cloud = ecomodel_utils.subtract_terrain(tile.cloud,tile.terrain_model,grid_size=tile.grid_size)
                 print(f"[DEBUG] normalize_raw_tiles: subtract_terrain done.", flush=True)
 
             tile.cloud[:,:2] = tile.cloud[:,:2] - self.mean[:2]
@@ -334,9 +331,9 @@ class Ecomodel:
             # surface = Utils.get_surface_points(ground_points, grid_size)
             # ground_points = ground_points-np.mean(ground_points,axis=0)#normalize ground points to improve numerical stability
             print(f"[DEBUG] get_terrain_model: calling rasterize_cloud ({len(ground_points)} pts)...", flush=True)
-            surface = Utils.rasterize_cloud(ground_points, grid_size)
+            surface = ecomodel_utils.rasterize_cloud(ground_points, grid_size)
             print(f"[DEBUG] get_terrain_model: rasterize_cloud done, raster shape={surface.shape}, calling fill_raster_gaps...", flush=True)
-            surface = Utils.fill_raster_gaps(surface)
+            surface = ecomodel_utils.fill_raster_gaps(surface)
             print(f"[DEBUG] get_terrain_model: fill_raster_gaps done.", flush=True)
 
             tile.terrain_model = surface
@@ -666,7 +663,7 @@ class Ecomodel:
                         continue
 
                     try:
-                        axis =Utils.get_axis(segment_cloud)
+                        axis =ecomodel_utils.get_axis(segment_cloud)
                     except:
                         continue
 
@@ -679,8 +676,8 @@ class Ecomodel:
                     segment_cloud = segment_cloud[lexsort_indices]
 
 
-                    sub_segments = Utils.split_segments(segment_cloud,6,15)
-                    # sub_segments = Utils.split_segments(rotated_cloud,6,15)
+                    sub_segments = ecomodel_utils.split_segments(segment_cloud,6,15)
+                    # sub_segments = ecomodel_utils.split_segments(rotated_cloud,6,15)
                     while np.sum(sub_segments)>len(sub_segments)/6:
 
                         ss_idx = sub_segments.astype(bool)
@@ -697,11 +694,11 @@ class Ecomodel:
                         segment_cloud = segment_cloud[lexsort_indices]
 
 
-                        sub_segments = Utils.split_segments(segment_cloud,6,15)
+                        sub_segments = ecomodel_utils.split_segments(segment_cloud,6,15)
                         # rotated_cloud= rotated_cloud[ss_idx]
                         # lexsort_indices = np.argsort(rotated_cloud[:, 2])
                         # rotated_cloud = rotated_cloud[lexsort_indices]
-                        # sub_segments = Utils.split_segments(rotated_cloud,6,15)
+                        # sub_segments = ecomodel_utils.split_segments(rotated_cloud,6,15)
 
 
                 cloud_segments = new_cloud_segments+max_segment
@@ -1234,6 +1231,10 @@ class Ecomodel:
                     qsm_input['plot'] = 0
                     qsm_input['savepdf'] = 0
                     qsm_input['savetxt'] = 0
+                    # Cylinders come back in the tile frame, the same frame the
+                    # cylinders() paths above store, so the starts can be
+                    # concatenated into tile.cylinder_starts as they are.
+                    qsm_input['zero_base'] = 0
                 except np.linalg.LinAlgError as e:
                     logger.warning(f"Unable to find axis for segment {segment}")
                     tile.segment_labels[segment_mask] = -1
@@ -1734,7 +1735,7 @@ class Ecomodel:
             file = files[0]
             logger.info(f"Loading file: {file}")
             filepath = os.path.join(folder, file)
-            point_cloud, point_data = Utils.load_point_cloud(
+            point_cloud, point_data = load_point_cloud(
                 filepath, intensity_threshold, True,
                 scalar_field=scalar_field, normalize_scalar=normalize_scalar)
             if point_cloud is not None:
@@ -1747,7 +1748,7 @@ class Ecomodel:
             logger.info(f"Loading file {i}/{len(files)}: {file}")
             filepath = os.path.join(folder, file)
 
-            point_cloud, point_data = Utils.load_point_cloud(
+            point_cloud, point_data = load_point_cloud(
                 os.path.join(folder, file), intensity_threshold, True,
                 scalar_field=scalar_field, normalize_scalar=normalize_scalar)
             if point_cloud is not None:
@@ -2256,7 +2257,7 @@ def ecomodel_tile(tile_file_path, results_folder):
     combined_cloud = Ecomodel(results_folder)
     basename = os.path.basename(tile_file_path)
 
-    point_cloud, point_data = Utils.load_point_cloud(tile_file_path, 0, True)
+    point_cloud, point_data = load_point_cloud(tile_file_path, 0, True)
     if point_cloud is not None:
         combined_cloud.add_tile(Tile(point_cloud, point_data, True))
     if combined_cloud is None:

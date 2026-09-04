@@ -5,30 +5,27 @@ import os
 import shutil
 import CSF
 import numpy as np
-from Utils.Utils import load_point_cloud
+from PyTLidar.Utils.Utils import load_point_cloud
 from SegmentRGI.SegmentRGI import classify_wood_leaf
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from plyfile import PlyData, PlyElement
-from Utils.plot_tools import SimplePlotter
+from plot_tools import SimplePlotter
 import open3d as o3d
 import cc3d
 from copy import deepcopy
-from Utils.Utils import load_point_cloud
 import numpy as np
 from pathlib import Path
 import time
-from TreeQSMSteps.cover_sets import cover_sets
 from ecomodel_segmenters import SegmenterScanline, SegmenterTreeLearn
-from Utils.define_input import define_input
-from treeqsm import treeqsm
-from TreeQSMSteps.cover_sets import cover_sets
-from TreeQSMSteps.segments import segments
-from TreeQSMSteps.correct_segments import correct_segments
-from TreeQSMSteps.tree_sets import tree_sets
-from TreeQSMSteps.relative_size import relative_size
-from TreeQSMSteps.cylinders import cylinders
-from Utils.tree_metrics import compute_tree_metrics
+from PyTLidar.Utils.define_input import define_input
+from PyTLidar.TreeQSMSteps.cover_sets import cover_sets
+from PyTLidar.TreeQSMSteps.segments import segments
+from PyTLidar.TreeQSMSteps.correct_segments import correct_segments
+from PyTLidar.TreeQSMSteps.tree_sets import tree_sets
+from PyTLidar.TreeQSMSteps.relative_size import relative_size
+from PyTLidar.TreeQSMSteps.cylinders import cylinders
+from tree_metrics import compute_tree_metrics
 import logging
 
 logger = logging.getLogger("Ecomodel")
