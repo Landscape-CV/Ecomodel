@@ -6,8 +6,7 @@ mistree>=2.0.0
 # pc-skeletor pins mistree==1.2.0 which fails to build on Windows.
 # Install manually: pip install mistree --only-binary :all: && pip install pc-skeletor --no-deps
 reportlab>=4.0.0
-laspy==2.5.4
-lazrs[laszip]==0.7.0
+laspy[laszip,lazrs]==2.5.4
 matplotlib==3.10.3
 numba==0.61.2
 numpy==2.2.6
