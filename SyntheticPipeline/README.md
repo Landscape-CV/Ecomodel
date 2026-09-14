@@ -72,6 +72,7 @@ benchmark_instance_segmentation.py  →  Hungarian F1 / PQ by density stratum
 - `plot_species_performance.py` — Bar charts of trunk metrics grouped by species
 - `plot_benchmark_qsm.py` — Plots successful QSM benchmark rows
 - `plot_benchmark_instance.py` — Plots instance-segmentation F1/PQ/PR by density & composition
+- `plot_leaf_removal_ablation.py` — Leaf-on vs leaf-off (`--leaf_removal`) F1/PQ comparison plots
 
 ### `evaluation/`
 
@@ -254,6 +255,14 @@ python scripts/plot_benchmark_instance.py \
   --out output/visualizations/benchmark_instance_4method_full.png
 ```
 
+Leaf-on vs leaf-off ablation (matched tiles from Phase 0):
+
+```bash
+python scripts/plot_leaf_removal_ablation.py
+# → output/visualizations/benchmark_instance_leaf_removal_ablation.png
+#    …_delta_f1.png  …_by_composition.png
+```
+
 ### Installing Point-SAM and SNAP
 
 Clone + weights live under the parent repo `thirdparty/` (gitignored except install notes).
@@ -264,7 +273,7 @@ Clone + weights live under the parent repo `thirdparty/` (gitignored except inst
 |--------|---------------|------------|
 | [Point-SAM](https://github.com/zyc00/Point-SAM) | [`thirdparty/Point-SAM/INSTALL_ECOMODEL.md`](../thirdparty/Point-SAM/INSTALL_ECOMODEL.md) — build `torkit3d` with CUDA 13.3 + `TORCH_CUDA_ARCH_LIST=12.0`; apex optional | HuggingFace `yuchen0187/Point-SAM` → `thirdparty/checkpoints/point_sam/model.safetensors` |
 | [SNAP](https://github.com/neu-vi/SNAP) | [`thirdparty/SNAP/INSTALL_ECOMODEL.md`](../thirdparty/SNAP/INSTALL_ECOMODEL.md) — source `torch-scatter`, `spconv-cu128`/`cumm-cu128`, Outdoor domain, `grid_size=0.05` | [SNAP Outdoor / C](https://github.com/neu-vi/SNAP#checkpoints) → `thirdparty/checkpoints/snap/SNAP_C.pth` |
-| TreeLearn | Existing TreeLearn YAML + `.pth` weights | `--treelearn_config` |
+| TreeLearn | [`TreeLearn/INSTALL_ECOMODEL.md`](../TreeLearn/INSTALL_ECOMODEL.md) — clone + weights; default `TreeLearn/configs/pipeline/ecomodel.yaml` | `TreeLearn/data/model_weights/model_weights_with_small_20241213.pth` |
 
 Quick Point-SAM weight download (after clone):
 
@@ -293,7 +302,7 @@ Earlier Scanline-only numbers (before Point-SAM/SNAP were configured) are below.
 
 CSV artifacts: `output/benchmark_instance_4method.csv`, `_summary.csv`, `_summary.md`.
 
-**TreeLearn** still skipped without `--treelearn_config`.
+**TreeLearn** is wired with default config `TreeLearn/configs/pipeline/ecomodel.yaml` (see install notes). Stratified-8 smoke (`output/benchmark_instance_treelearn_smoke.csv`): works end-to-end; best on sparse/moderate, weak on dense/extreme (domain gap vs real-TLS pretrain).
 ## Dataset File Convention
 
 ### Single-tree wood/leaf tiles (`testdataset/single/`)

@@ -116,7 +116,7 @@ class EcomodelConfig:
 
     # ── Lite: instance segmenter ──────────────────────────────────────────────
     lite_segmenter_type: str = "scanline"   # "scanline" | "treelearn" | "pointsam" | "snap"
-    treelearn_config_path: str = ""         # path to TreeLearn YAML config
+    treelearn_config_path: str = "TreeLearn/configs/pipeline/ecomodel.yaml"
     treelearn_use_gpu: bool = True          # use CUDA; False = CPU (very slow)
     pointsam_ckpt: str = ""                 # Point-SAM .safetensors checkpoint
     pointsam_config: str = "large"          # hydra config name under thirdparty/Point-SAM/configs

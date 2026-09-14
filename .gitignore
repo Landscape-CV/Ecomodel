@@ -64,3 +64,12 @@ thirdparty/SNAP/**
 thirdparty/checkpoints/**
 !thirdparty/checkpoints/
 !thirdparty/checkpoints/README.md
+
+# TreeLearn clone + large weights (keep install notes / ecomodel config)
+TreeLearn/**
+!TreeLearn/
+!TreeLearn/INSTALL_ECOMODEL.md
+!TreeLearn/configs/
+!TreeLearn/configs/**
+!TreeLearn/README.md
+TreeLearn/data/**

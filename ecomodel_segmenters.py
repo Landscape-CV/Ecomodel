@@ -1135,15 +1135,48 @@ class SegmenterTreeLearn:
     def __init__(self, config_path: str, use_gpu: bool = True):
         import sys
         from pathlib import Path
-        # Make sure the TreeLearn package is importable
-        _tl_root = Path(__file__).resolve().parent / "TreeLearn"
-        if str(_tl_root) not in sys.path:
-            sys.path.insert(0, str(_tl_root))
+        self._tl_root = Path(__file__).resolve().parent / "TreeLearn"
+        if not self._tl_root.is_dir():
+            raise FileNotFoundError(
+                f"TreeLearn not found at {self._tl_root}. "
+                "Clone https://github.com/ecker-lab/TreeLearn into Ecomodel/TreeLearn "
+                "and see TreeLearn/INSTALL_ECOMODEL.md"
+            )
+        if str(self._tl_root) not in sys.path:
+            sys.path.insert(0, str(self._tl_root))
 
-        from tree_learn.util import get_config
-        self.config_path = config_path
-        self.base_config = get_config(config_path)
-        self.device = 'cuda' if use_gpu else 'cpu'
+        # Modular YAML paths are relative to TreeLearn repo root
+        self._prev_cwd = os.getcwd()
+        try:
+            os.chdir(self._tl_root)
+            from tree_learn.util import get_config
+            cfg_path = Path(config_path)
+            if not cfg_path.is_absolute():
+                # Accept either repo-relative ("TreeLearn/configs/...") or
+                # TreeLearn-root-relative ("configs/pipeline/ecomodel.yaml")
+                cand = Path(self._prev_cwd) / cfg_path
+                if cand.is_file():
+                    cfg_path = cand.resolve()
+                else:
+                    cfg_path = (self._tl_root / cfg_path).resolve()
+            if not cfg_path.is_file():
+                raise FileNotFoundError(f"TreeLearn config not found: {cfg_path}")
+            self.config_path = str(cfg_path)
+            self.base_config = get_config(self.config_path)
+            # Resolve relative weight path against TreeLearn root
+            pretrain = getattr(self.base_config, "pretrain", "")
+            if pretrain and not os.path.isabs(pretrain):
+                abs_pretrain = str((self._tl_root / pretrain).resolve())
+                self.base_config.pretrain = abs_pretrain
+            if not os.path.isfile(self.base_config.pretrain):
+                raise FileNotFoundError(
+                    f"TreeLearn weights missing: {self.base_config.pretrain}. "
+                    "See TreeLearn/INSTALL_ECOMODEL.md"
+                )
+        finally:
+            os.chdir(self._prev_cwd)
+
+        self.device = "cuda" if use_gpu else "cpu"
 
     def segment(self, point_cloud: np.ndarray, output_dir: str = None):
         """
@@ -1166,56 +1199,91 @@ class SegmenterTreeLearn:
         """
         import copy
         import tempfile
-        from pathlib import Path
-        from tree_learn.util import get_config
-
-        # Import the patched pipeline that accepts a device argument
         import sys
-        _tl_root = Path(__file__).resolve().parent / "TreeLearn"
-        _tools = str(_tl_root / "tools" / "pipeline")
+        from pathlib import Path
+
+        if str(self._tl_root) not in sys.path:
+            sys.path.insert(0, str(self._tl_root))
+        _tools = str(self._tl_root / "tools" / "pipeline")
         if _tools not in sys.path:
             sys.path.insert(0, _tools)
-        from pipeline import run_treelearn_pipeline
 
         xyz = point_cloud[:, :3].astype(np.float64)
 
-        _tmp_ctx = None
-        if output_dir is None:
-            _tmp_ctx = tempfile.TemporaryDirectory()
-            work_dir = _tmp_ctx.name
-        else:
-            work_dir = output_dir
+        # TreeLearn keys on-disk caches by plot_name = basename(work_dir).
+        # Always use a unique directory so shared lite/benchmark output_dir
+        # cannot reuse tiles from a previous tile/call.
+        _tmp_ctx = tempfile.TemporaryDirectory(prefix="treelearn_")
+        work_dir = _tmp_ctx.name
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
 
+        prev_cwd = os.getcwd()
         try:
+            from pipeline import run_treelearn_pipeline
+
             forest_dir = os.path.join(work_dir, "forest")
             os.makedirs(forest_dir, exist_ok=True)
-            forest_filename = os.path.basename(work_dir) + ".npz"
-            forest_path = os.path.join(forest_dir, forest_filename)
-            np.savez_compressed(forest_path, points=xyz)
+            plot_name = os.path.basename(os.path.normpath(work_dir))
+            # Save as .npy (N,4) with unlabeled filler labels. TreeLearn's pipeline
+            # centers the cloud into forest/<plot>_centered.npz.
+            forest_path = os.path.join(forest_dir, f"{plot_name}.npy")
+            labels = np.full((xyz.shape[0], 1), -1, dtype=np.float64)
+            np.save(forest_path, np.hstack([xyz, labels]))
 
             config = copy.deepcopy(self.base_config)
             config.forest_path = forest_path
             config.tile_generation = True
             config.save_cfg.save_treewise = False
             config.save_cfg.save_pointwise = False
-            config.save_cfg.save_formats = ['npz']
+            config.save_cfg.save_formats = ["npz"]
+            # Keep voxelized return for speed; benchmark remaps via NN if needed
+            if not getattr(config.save_cfg, "return_type", None):
+                config.save_cfg.return_type = "voxelized_and_filtered"
 
-            run_treelearn_pipeline(config, device=self.device)
+            # Modular configs + relative assets expect TreeLearn as cwd
+            os.chdir(self._tl_root)
+            run_treelearn_pipeline(config, config_path=self.config_path, device=self.device)
 
+            # After centering, plot_name may still be the original stem
             result_path = os.path.join(
-                work_dir, 'results', 'full_forest',
-                os.path.basename(work_dir) + ".npz"
+                work_dir, "results", "full_forest", f"{plot_name}.npz"
             )
             if not os.path.exists(result_path):
-                return None, None
+                # Pipeline may use *_centered stem after rewrite
+                result_path = os.path.join(
+                    work_dir, "results", "full_forest", f"{plot_name}_centered.npz"
+                )
+            if not os.path.exists(result_path):
+                full_dir = os.path.join(work_dir, "results", "full_forest")
+                candidates = []
+                if os.path.isdir(full_dir):
+                    candidates = [
+                        os.path.join(full_dir, f)
+                        for f in os.listdir(full_dir)
+                        if f.endswith(".npz")
+                    ]
+                if not candidates:
+                    print(f"[SegmenterTreeLearn] no result npz under {full_dir}")
+                    return None, None
+                result_path = candidates[0]
 
             data = np.load(result_path, allow_pickle=True)
-            coords = data['points']
-            instance_preds = data['labels'].copy()
+            coords = np.asarray(data["points"], dtype=np.float64)
+            instance_preds = np.asarray(data["labels"]).copy()
             # Remap TreeLearn 0 (non-tree) → ecomodel -1
             instance_preds[instance_preds == 0] = -1
 
-            return coords, instance_preds
+            if output_dir is not None:
+                try:
+                    import shutil
+                    dst = os.path.join(output_dir, "full_forest")
+                    os.makedirs(dst, exist_ok=True)
+                    shutil.copy2(result_path, os.path.join(dst, os.path.basename(result_path)))
+                except Exception:
+                    pass
+
+            return coords, instance_preds.astype(np.int32)
 
         except Exception as exc:
             import traceback
@@ -1224,8 +1292,31 @@ class SegmenterTreeLearn:
             return None, None
 
         finally:
+            os.chdir(prev_cwd)
+            # Release TreeLearn file logger before deleting temp work dir (Windows)
+            try:
+                import logging
+                for h in list(logging.root.handlers):
+                    try:
+                        h.close()
+                    except Exception:
+                        pass
+                    logging.root.removeHandler(h)
+                for name in list(logging.Logger.manager.loggerDict):
+                    lg = logging.getLogger(name)
+                    for h in list(lg.handlers):
+                        try:
+                            h.close()
+                        except Exception:
+                            pass
+                        lg.removeHandler(h)
+            except Exception:
+                pass
             if _tmp_ctx is not None:
-                _tmp_ctx.cleanup()
+                try:
+                    _tmp_ctx.cleanup()
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
