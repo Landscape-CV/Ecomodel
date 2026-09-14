@@ -479,7 +479,8 @@ def main():
         help="For pointsam/snap: automatic seeds, GT-oracle clicks, or both",
     )
     parser.add_argument("--iou_thresh", type=float, default=0.5)
-    parser.add_argument("--treelearn_config", type=str, default="")
+    parser.add_argument("--treelearn_config", type=str,
+                        default=os.path.join(_ROOT, "TreeLearn", "configs", "pipeline", "ecomodel.yaml"))
     parser.add_argument("--no_treelearn_gpu", action="store_true")
     parser.add_argument("--pointsam_ckpt", type=str,
                         default=os.path.join(_ROOT, "thirdparty", "checkpoints", "point_sam", "model.safetensors"))
@@ -509,9 +510,17 @@ def main():
     args = parser.parse_args()
 
     base_algs = [a.strip() for a in args.algorithms.split(",") if a.strip()]
-    if "treelearn" in base_algs and not args.treelearn_config:
-        print("WARNING: treelearn requested but --treelearn_config not set; skipping treelearn")
-        base_algs = [a for a in base_algs if a != "treelearn"]
+    if "treelearn" in base_algs:
+        if not args.treelearn_config or not os.path.isfile(args.treelearn_config):
+            print(f"WARNING: treelearn config missing ({args.treelearn_config}); skipping treelearn")
+            base_algs = [a for a in base_algs if a != "treelearn"]
+        else:
+            try:
+                from ecomodel_segmenters import SegmenterTreeLearn
+                SegmenterTreeLearn(args.treelearn_config, use_gpu=not args.no_treelearn_gpu)
+            except Exception as exc:
+                print(f"WARNING: treelearn init failed ({exc}); skipping treelearn")
+                base_algs = [a for a in base_algs if a != "treelearn"]
     if "pointsam" in base_algs and not os.path.isfile(args.pointsam_ckpt):
         print(f"WARNING: pointsam ckpt missing ({args.pointsam_ckpt}); skipping pointsam")
         base_algs = [a for a in base_algs if a != "pointsam"]
