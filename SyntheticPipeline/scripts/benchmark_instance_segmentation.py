@@ -4,15 +4,15 @@ Benchmark tree instance segmentation on multi-tree synthetic tiles.
 Expects tiles produced by ``generate_instance_benchmark.py``:
   {tile}_scan.laz, {tile}_instances.npy, {tile}_meta.json
 
-Algorithms: scanline, treelearn, pointsam, snap
+Algorithms: scanline, treelearn, pointsam, snap, treex, tls2trees
   (+ pointsam_oracle / snap_oracle when --prompt_mode oracle|both)
 
 Usage:
   python scripts/benchmark_instance_segmentation.py \\
       --dataset_dir testdataset/instance \\
-      --algorithms scanline,treelearn,pointsam,snap \\
-      --prompt_mode both --stratify 16 \\
-      --out_csv output/benchmark_instance_4method.csv
+      --algorithms treex,tls2trees,scanline \\
+      --tiles_file pointsam_voxelized/split.json --split_key val \\
+      --out_csv output/benchmark_treex_tls2trees_val16.csv
 """
 from __future__ import annotations
 
@@ -166,6 +166,45 @@ def discover_tiles(dataset_dir: str) -> List[str]:
     return sorted(prefixes)
 
 
+def tiles_from_split_file(
+    dataset_dir: str,
+    tiles_file: str,
+    split_key: str = "val",
+) -> List[str]:
+    """
+    Resolve tile prefixes from a JSON split file (e.g. pointsam_voxelized/split.json).
+
+    Accepts either:
+      {"val": ["dense_mixed_02", ...], "train": [...]}
+      {"val": [".../dense_mixed_02"], ...}  (basename used)
+    """
+    path = tiles_file
+    if not os.path.isabs(path):
+        cand = os.path.join(_SP_DIR, path)
+        path = cand if os.path.isfile(cand) else path
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if split_key not in data:
+        raise KeyError(f"split key '{split_key}' not in {path}; keys={list(data.keys())}")
+    names = data[split_key]
+    prefixes: List[str] = []
+    for name in names:
+        base = os.path.basename(str(name))
+        # Strip common suffixes if present
+        for suf in ("_scan.laz", "_instances.npy", "_meta.json", ".npz"):
+            if base.endswith(suf):
+                base = base[: -len(suf)]
+                break
+        prefix = os.path.join(dataset_dir, base)
+        laz = prefix + "_scan.laz"
+        gt = prefix + "_instances.npy"
+        if os.path.isfile(laz) and os.path.isfile(gt):
+            prefixes.append(prefix)
+        else:
+            print(f"WARNING: missing tile for split entry '{name}' → {prefix}")
+    return prefixes
+
+
 def stratify_tiles(tiles: List[str], target_n: int, seed: int) -> List[str]:
     """
     Pick up to target_n tiles with balanced density × composition coverage.
@@ -256,6 +295,9 @@ def run_segmenter_on_tile(
         kwargs["snap_domain"] = snap_domain
         kwargs["snap_grid_size"] = snap_grid_size
         kwargs["snap_use_gpu"] = snap_use_gpu
+    elif base_type == "tls2trees":
+        # Skip RGI semantic when leaf-removal already produced wood-only input.
+        kwargs["tls2trees_use_rgi"] = not run_leaf_removal
 
     model = EcomodelLite(**kwargs)
 
@@ -469,7 +511,7 @@ def main():
         "--algorithms",
         type=str,
         default="scanline,pointsam,snap",
-        help="Comma-separated: scanline,treelearn,pointsam,snap",
+        help="Comma-separated: scanline,treelearn,pointsam,snap,treex,tls2trees",
     )
     parser.add_argument(
         "--prompt_mode",
@@ -495,6 +537,18 @@ def main():
     parser.add_argument("--sample_n", type=int, default=None)
     parser.add_argument("--stratify", type=int, default=None,
                         help="Stratified sample size (e.g. 16 = 1 mixed+1 mono per density)")
+    parser.add_argument(
+        "--tiles_file",
+        type=str,
+        default=None,
+        help="JSON split file (e.g. pointsam_voxelized/split.json) listing tile names",
+    )
+    parser.add_argument(
+        "--split_key",
+        type=str,
+        default="val",
+        help="Key inside --tiles_file to use (default: val)",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--save_predictions",
@@ -548,20 +602,40 @@ def main():
         except Exception as exc:
             print(f"WARNING: snap import failed ({exc}); skipping snap")
             base_algs = [a for a in base_algs if a != "snap"]
+    if "treex" in base_algs:
+        try:
+            from ecomodel_segmenters import SegmenterTreeX
+            SegmenterTreeX(adapt_synthetic=True)
+        except Exception as exc:
+            print(f"WARNING: treex init failed ({exc}); skipping treex")
+            base_algs = [a for a in base_algs if a != "treex"]
+    if "tls2trees" in base_algs:
+        try:
+            from ecomodel_segmenters import SegmenterTLS2trees
+            SegmenterTLS2trees(use_rgi_semantic=False)
+            _tls = os.path.join(_ROOT, "thirdparty", "TLS2trees")
+            if not os.path.isdir(_tls):
+                print(f"WARNING: TLS2trees clone missing at {_tls}; continuing with in-process port")
+        except Exception as exc:
+            print(f"WARNING: tls2trees init failed ({exc}); skipping tls2trees")
+            base_algs = [a for a in base_algs if a != "tls2trees"]
 
     algorithms = expand_algorithms(base_algs, args.prompt_mode)
     if not algorithms:
         print("No algorithms to run (check checkpoints / configs).")
         sys.exit(1)
 
-    tiles = discover_tiles(args.dataset_dir)
+    if args.tiles_file:
+        tiles = tiles_from_split_file(args.dataset_dir, args.tiles_file, args.split_key)
+    else:
+        tiles = discover_tiles(args.dataset_dir)
     if not tiles:
-        print(f"No tiles with *_scan.laz + *_instances.npy in {args.dataset_dir}")
+        print(f"No tiles found (dataset_dir={args.dataset_dir}, tiles_file={args.tiles_file})")
         sys.exit(1)
 
-    if args.stratify is not None:
+    if args.tiles_file is None and args.stratify is not None:
         tiles = stratify_tiles(tiles, args.stratify, args.seed)
-    elif args.sample_n is not None and args.sample_n < len(tiles):
+    elif args.tiles_file is None and args.sample_n is not None and args.sample_n < len(tiles):
         rng = np.random.default_rng(args.seed)
         tiles = list(rng.choice(tiles, size=args.sample_n, replace=False))
 
