@@ -3,6 +3,10 @@
 output/
 testdataset/
 
+# Point-SAM fine-tune artifacts (large binaries; keep training code)
+pointsam_voxelized/
+pointsam_checkpoints/
+
 # Ignore Python cache files
 __pycache__/
 *.pyc
