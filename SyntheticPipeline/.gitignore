@@ -7,6 +7,10 @@ testdataset/
 pointsam_voxelized/
 pointsam_checkpoints/
 
+# TreeLearn fine-tune artifacts (large binaries; keep training code)
+treelearn_prepared/
+treelearn_checkpoints/
+
 # Ignore Python cache files
 __pycache__/
 *.pyc
