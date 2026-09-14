@@ -1319,6 +1319,359 @@ class SegmenterTreeLearn:
                     pass
 
 
+class SegmenterTreeX:
+    """
+    Wraps pointtree TreeX (TreeXPresetTLS) as a drop-in instance segmenter.
+
+    Label convention matches SegmenterScanline:
+        -1 = non-tree / unassigned
+        0+ = individual tree instances
+
+    Synthetic TLS clouds are typically sparser at breast height than the
+    RIEGL plots TreeX was tuned on, so ``adapt_synthetic=True`` (default)
+    relaxes stem-search / circle-fit thresholds while still starting from
+    ``TreeXPresetTLS``. Set ``adapt_synthetic=False`` for stock TLS params.
+    """
+
+    def __init__(self, adapt_synthetic: bool = True, num_workers: int = 4):
+        try:
+            from pointtree.instance_segmentation import TreeXAlgorithm, TreeXPresetTLS
+        except ImportError as exc:
+            raise ImportError(
+                "pointtree is required for SegmenterTreeX. "
+                "See thirdparty/pointtree/INSTALL_ECOMODEL.md"
+            ) from exc
+
+        kw = dict(TreeXPresetTLS())
+        kw["num_workers"] = int(num_workers)
+        if adapt_synthetic:
+            # Relax density-sensitive stem gates for synthetic Open3D TLS.
+            kw.update({
+                "stem_search_dbscan_2d_min_points": 15,
+                "stem_search_dbscan_2d_eps": 0.08,
+                "stem_search_dbscan_3d_min_points": 8,
+                "stem_search_dbscan_3d_eps": 0.15,
+                "stem_search_min_cluster_points": 40,
+                "stem_search_min_cluster_height": 0.6,
+                "stem_search_min_cluster_intensity": None,
+                "stem_search_voxel_size": 0.04,
+                "stem_search_circle_fitting_min_points": 8,
+                "stem_search_circle_fitting_min_fitting_score": 20.0,
+                "stem_search_circle_fitting_min_completeness_idx": 0.15,
+                "stem_search_circle_fitting_max_std_diameter": 0.15,
+                "stem_search_circle_fitting_layer_height": 0.35,
+                "stem_search_circle_fitting_num_layers": 8,
+                "stem_search_circle_fitting_layer_overlap": 0.05,
+            })
+        self._algorithm = TreeXAlgorithm(**kw)
+        self.adapt_synthetic = adapt_synthetic
+
+    @staticmethod
+    def _intensities_for_treex(point_cloud: np.ndarray):
+        """Return intensity vector in TLS-ish scale, or None to skip filter."""
+        if point_cloud.ndim != 2 or point_cloud.shape[1] < 4:
+            return None
+        inten = np.asarray(point_cloud[:, 3], dtype=np.float64)
+        if inten.size == 0:
+            return None
+        # Benchmark / EcomodelLite often store intensity in [0, 1].
+        if float(np.nanmax(inten)) <= 1.5:
+            inten = inten * 65535.0
+        return inten
+
+    def segment(self, point_cloud: np.ndarray, output_dir: str = None):
+        """
+        Run TreeX instance segmentation.
+
+        Parameters
+        ----------
+        point_cloud : np.ndarray
+            (N, 3) or (N, 4) [x, y, z, (intensity)].
+        output_dir : str, optional
+            Unused (TreeX is in-memory); accepted for API parity.
+
+        Returns
+        -------
+        point_cloud, instance_ids
+        """
+        xyz = np.asarray(point_cloud[:, :3], dtype=np.float64)
+        if len(xyz) < 50:
+            return None, None
+
+        # With synthetic adaptations intensity filtering is disabled in the
+        # preset; still pass intensities=None for speed / consistency.
+        intensities = None
+        if not self.adapt_synthetic:
+            intensities = self._intensities_for_treex(point_cloud)
+
+        instance_ids, _trunks, _diams = self._algorithm(xyz, intensities=intensities)
+        labels = np.asarray(instance_ids, dtype=np.int32).reshape(-1)
+        # TreeX uses invalid_tree_id=-1 already; keep 0+ tree ids as-is.
+        labels[labels < 0] = -1
+        return np.asarray(point_cloud), labels
+
+    def process(self, point_cloud, intensity_threshold=0):
+        """API parity with SegmenterScanline.process."""
+        return self.segment(point_cloud)
+
+
+class SegmenterTLS2trees:
+    """
+    TLS2trees-style stem graph instance segmentation (Windows-safe port).
+
+    Upstream ``tls2trees.instance`` imports Unix-only ``resource`` and pins an
+    ancient FSCT/torch stack, so this wrapper:
+
+    1. Uses RGI wood/leaf as a semantic stand-in for FSCT (or treats the whole
+       cloud as wood when leaf-removal already ran upstream).
+    2. Runs the same stem-slice → DBSCAN → graph-grow idea in-process.
+    3. Maps tree IDs back to every input point via nearest wood neighbour.
+
+    Labels: -1 = non-tree, 0+ = trees.
+    """
+
+    def __init__(
+        self,
+        slice_thickness: float = 0.5,
+        stem_z_min: float = 1.0,
+        stem_z_max: float = 2.5,
+        stem_dbscan_eps: float = 0.25,
+        stem_min_points: int = 40,
+        graph_edge_length: float = 1.0,
+        graph_max_gap: float = 5.0,
+        use_rgi_semantic: bool = True,
+        rgi_params: dict = None,
+    ):
+        self.slice_thickness = float(slice_thickness)
+        self.stem_z_min = float(stem_z_min)
+        self.stem_z_max = float(stem_z_max)
+        self.stem_dbscan_eps = float(stem_dbscan_eps)
+        self.stem_min_points = int(stem_min_points)
+        self.graph_edge_length = float(graph_edge_length)
+        self.graph_max_gap = float(graph_max_gap)
+        self.use_rgi_semantic = bool(use_rgi_semantic)
+        self.rgi_params = rgi_params or {
+            "noise_percentile": 0,
+            "angle_deg": 7.0,
+            "curv_thresh": 0.07,
+            "resid_thresh": 0.05,
+            "k": 100,
+            "minClusterSize": 40,
+            "maxClusterSize": 100000,
+            "smoothMode": True,
+            "useResidualTest": True,
+            "useCurvatureTest": True,
+        }
+        self._tls_root = Path(__file__).resolve().parent / "thirdparty" / "TLS2trees"
+
+    def _wood_mask(self, point_cloud: np.ndarray) -> np.ndarray:
+        """True = wood. Falls back to all-True if RGI fails / disabled."""
+        n = len(point_cloud)
+        if not self.use_rgi_semantic or n < 200:
+            return np.ones(n, dtype=bool)
+        try:
+            xyz = np.asarray(point_cloud[:, :3], dtype=np.float64)
+            inten = (
+                np.asarray(point_cloud[:, 3], dtype=np.float32)
+                if point_cloud.shape[1] >= 4
+                else np.ones(n, dtype=np.float32)
+            )
+            if float(np.nanmax(inten)) <= 1.5:
+                inten = (inten * 65535.0).astype(np.float32)
+
+            # RGI is O(N log N); voxel-downsample large tiles then expand.
+            max_rgi = 250_000
+            if n > max_rgi:
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(xyz)
+                pcd = pcd.voxel_down_sample(voxel_size=0.08)
+                sub = np.asarray(pcd.points, dtype=np.float64)
+                from scipy.spatial import cKDTree
+                _, sub_nn = cKDTree(xyz).query(sub, k=1)
+                sub_cloud = np.hstack([sub, inten[sub_nn].reshape(-1, 1)])
+            else:
+                sub_cloud = np.hstack([xyz, inten.reshape(-1, 1)])
+                sub_nn = np.arange(n)
+
+            with TemporaryDirectory() as tmpdir:
+                tmp_ply = Path(tmpdir) / "segment.ply"
+                tmp_results = Path(tmpdir) / "results"
+                tmp_results.mkdir(exist_ok=True)
+                m = len(sub_cloud)
+                vertex_dtype = [("x", "f8"), ("y", "f8"), ("z", "f8"), ("Intensity", "f4")]
+                structured = np.zeros(m, dtype=vertex_dtype)
+                structured["x"] = sub_cloud[:, 0]
+                structured["y"] = sub_cloud[:, 1]
+                structured["z"] = sub_cloud[:, 2]
+                structured["Intensity"] = sub_cloud[:, 3]
+                PlyData([PlyElement.describe(structured, "vertex")], text=False).write(str(tmp_ply))
+                classify_wood_leaf(
+                    str(tmp_ply), save_dir=str(tmp_results), show_plots=False, **self.rgi_params
+                )
+                wood_file = tmp_results / "segment_wood.ply"
+                if not wood_file.exists():
+                    return np.ones(n, dtype=bool)
+                wood_pcd = o3d.io.read_point_cloud(str(wood_file))
+                wxyz = np.asarray(wood_pcd.points, dtype=np.float64)
+                if len(wxyz) == 0:
+                    return np.ones(n, dtype=bool)
+                from scipy.spatial import cKDTree
+                # Wood flags on subsample → expand to full cloud by NN
+                sub_xyz = sub_cloud[:, :3]
+                sub_mask = np.zeros(len(sub_xyz), dtype=bool)
+                _, wnn = cKDTree(sub_xyz).query(wxyz, k=1)
+                sub_mask[wnn] = True
+                if sub_mask.sum() < max(20, int(0.001 * len(sub_xyz))):
+                    return np.ones(n, dtype=bool)
+                _, full_nn = cKDTree(sub_xyz).query(xyz, k=1)
+                return sub_mask[full_nn]
+        except Exception as exc:
+            print(f"[SegmenterTLS2trees] RGI semantic fallback failed ({exc}); treating all as wood")
+            return np.ones(n, dtype=bool)
+
+    def segment(self, point_cloud: np.ndarray, output_dir: str = None):
+        from sklearn.cluster import DBSCAN
+        from sklearn.neighbors import NearestNeighbors
+        import networkx as nx
+
+        xyz = np.asarray(point_cloud[:, :3], dtype=np.float64)
+        n = len(xyz)
+        if n < 50:
+            return None, None
+
+        labels_out = np.full(n, -1, dtype=np.int32)
+        wood = self._wood_mask(point_cloud)
+        if wood.sum() < 50:
+            return np.asarray(point_cloud), labels_out
+
+        wxyz = xyz[wood]
+        z0 = float(np.percentile(wxyz[:, 2], 2))
+        nz = wxyz[:, 2] - z0
+
+        # Vertical slices + DBSCAN → skeleton clusters
+        thickness = self.slice_thickness
+        n_slice = np.floor(nz / thickness).astype(np.int32)
+        clstr = np.full(len(wxyz), -1, dtype=np.int32)
+        offset = 0
+        for s in np.unique(n_slice):
+            idx = np.where(n_slice == s)[0]
+            if len(idx) < 30:
+                continue
+            db = DBSCAN(eps=0.15, min_samples=15).fit(wxyz[idx])
+            lab = db.labels_.astype(np.int32)
+            valid = lab >= 0
+            if not np.any(valid):
+                continue
+            clstr[idx[valid]] = lab[valid] + offset
+            offset = int(clstr.max()) + 1
+
+        if offset == 0:
+            return np.asarray(point_cloud), labels_out
+
+        # Cluster centroids
+        centroids = []
+        for cid in range(offset):
+            m = clstr == cid
+            if not np.any(m):
+                continue
+            centroids.append((cid, wxyz[m].mean(axis=0), float(nz[m].mean())))
+        if not centroids:
+            return np.asarray(point_cloud), labels_out
+        cids = np.array([c[0] for c in centroids], dtype=np.int32)
+        cxyz = np.array([c[1] for c in centroids], dtype=np.float64)
+        cnz = np.array([c[2] for c in centroids], dtype=np.float64)
+
+        # Stem seeds near breast height (horizontal DBSCAN)
+        stem_band = (cnz >= self.stem_z_min) & (cnz <= self.stem_z_max)
+        stem_origins = []
+        if np.any(stem_band):
+            band_xyz = cxyz[stem_band]
+            band_ids = cids[stem_band]
+            db = DBSCAN(
+                eps=self.stem_dbscan_eps, min_samples=max(2, self.stem_min_points // 20)
+            ).fit(band_xyz[:, :2])
+            for sid in np.unique(db.labels_):
+                if sid < 0:
+                    continue
+                members = band_ids[db.labels_ == sid]
+                # Require enough supporting wood points in the stem clusters
+                n_pts = int(np.sum(np.isin(clstr, members)))
+                if n_pts < self.stem_min_points:
+                    continue
+                # Pick lowest cluster in the group as origin
+                member_nz = np.array([cnz[cids == m][0] for m in members])
+                origin = int(members[int(np.argmin(member_nz))])
+                stem_origins.append(origin)
+
+        if not stem_origins:
+            # Fallback: treat well-populated low clusters as stems
+            low = cnz <= self.stem_z_max
+            for cid in cids[low]:
+                if int(np.sum(clstr == cid)) >= self.stem_min_points:
+                    stem_origins.append(int(cid))
+            stem_origins = stem_origins[:50]
+
+        if not stem_origins:
+            return np.asarray(point_cloud), labels_out
+
+        # Graph over cluster centroids
+        nn = NearestNeighbors(radius=self.graph_edge_length).fit(cxyz)
+        G = nx.Graph()
+        for i, cid in enumerate(cids):
+            G.add_node(int(cid))
+        dists, idxs = nn.radius_neighbors(cxyz, return_distance=True)
+        for i, (drow, irow) in enumerate(zip(dists, idxs)):
+            src = int(cids[i])
+            for d, j in zip(drow, irow):
+                if j <= i:
+                    continue
+                G.add_edge(src, int(cids[j]), length=float(d))
+
+        origins = [o for o in stem_origins if o in G]
+        if not origins:
+            return np.asarray(point_cloud), labels_out
+
+        try:
+            distance, path = nx.multi_source_dijkstra(G, sources=origins, weight="length")
+        except Exception:
+            return np.asarray(point_cloud), labels_out
+
+        # Map cluster → tree id (index into origins)
+        origin_to_tid = {o: i for i, o in enumerate(origins)}
+        cluster_to_tid = {}
+        for cid, dist in distance.items():
+            if dist > self.graph_max_gap:
+                continue
+            base = path[cid][0]
+            cluster_to_tid[int(cid)] = origin_to_tid[base]
+
+        # Assign wood points
+        wood_labels = np.full(len(wxyz), -1, dtype=np.int32)
+        for cid, tid in cluster_to_tid.items():
+            wood_labels[clstr == cid] = tid
+
+        # Unassigned wood → nearest labelled wood
+        assigned = wood_labels >= 0
+        if np.any(assigned) and np.any(~assigned):
+            nbrs = NearestNeighbors(n_neighbors=1).fit(wxyz[assigned])
+            _, nn_idx = nbrs.kneighbors(wxyz[~assigned])
+            wood_labels[~assigned] = wood_labels[assigned][nn_idx.reshape(-1)]
+
+        labels_out[wood] = wood_labels
+
+        # Non-wood (leaves) → nearest wood tree
+        non_wood = ~wood
+        if np.any(non_wood) and np.any(wood_labels >= 0):
+            nbrs = NearestNeighbors(n_neighbors=1).fit(wxyz[wood_labels >= 0])
+            _, nn_idx = nbrs.kneighbors(xyz[non_wood])
+            labels_out[non_wood] = wood_labels[wood_labels >= 0][nn_idx.reshape(-1)]
+
+        return np.asarray(point_cloud), labels_out
+
+    def process(self, point_cloud, intensity_threshold=0):
+        return self.segment(point_cloud)
+
+
 if __name__ == "__main__":
     classifier = DistanceBasedNoiseRemoval()
 

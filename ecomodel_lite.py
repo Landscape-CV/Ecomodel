@@ -19,7 +19,12 @@ import numpy as np
 from pathlib import Path
 import time
 from TreeQSMSteps.cover_sets import cover_sets
-from ecomodel_segmenters import SegmenterScanline, SegmenterTreeLearn
+from ecomodel_segmenters import (
+    SegmenterScanline,
+    SegmenterTreeLearn,
+    SegmenterTreeX,
+    SegmenterTLS2trees,
+)
 from ecomodel_promptable_segmenters import SegmenterPointSAM, SegmenterSNAP
 from Utils.define_input import define_input
 from treeqsm import treeqsm
@@ -173,7 +178,7 @@ class EcomodelLite:
         patch_diam2_max=0.08,
         ball_rad2=0.09,
         # ── Instance segmenter ──────────────────────────────────────────────
-        segmenter_type="scanline",       # "scanline" | "treelearn" | "pointsam" | "snap"
+        segmenter_type="scanline",       # "scanline" | "treelearn" | "pointsam" | "snap" | "treex" | "tls2trees"
         treelearn_config_path="",
         treelearn_use_gpu=True,
         pointsam_ckpt="",
@@ -183,6 +188,7 @@ class EcomodelLite:
         snap_domain="Outdoor",
         snap_grid_size=0.05,
         snap_use_gpu=True,
+        tls2trees_use_rgi=True,
     ):
         super().__init__()
         if not os.path.isdir(results_folder):
@@ -252,6 +258,12 @@ class EcomodelLite:
                 grid_size=float(snap_grid_size),
                 use_gpu=snap_use_gpu,
             )
+        elif segmenter_type == "treex":
+            self.segmenter = SegmenterTreeX(adapt_synthetic=True)
+        elif segmenter_type == "tls2trees":
+            # RGI semantic stand-in for FSCT; disable when leaf-removal already
+            # produced a wood-only cloud (set tls2trees_use_rgi=False).
+            self.segmenter = SegmenterTLS2trees(use_rgi_semantic=bool(tls2trees_use_rgi))
         else:
             self.segmenter = SegmenterScanline()
 
@@ -443,6 +455,8 @@ class EcomodelLite:
             point_cloud, labels = self.segmenter.segment(
                 point_cloud, output_dir=output_dir, prompts=prompts
             )
+        elif self.segmenter_type in ("treex", "tls2trees"):
+            point_cloud, labels = self.segmenter.segment(point_cloud, output_dir)
         else:
             point_cloud, labels = self.segmenter.process(point_cloud)
 

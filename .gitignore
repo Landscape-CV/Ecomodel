@@ -73,3 +73,12 @@ TreeLearn/**
 !TreeLearn/configs/**
 !TreeLearn/README.md
 TreeLearn/data/**
+
+# TLS2trees / pointtree clones (keep INSTALL notes)
+thirdparty/TLS2trees/**
+!thirdparty/TLS2trees/
+!thirdparty/TLS2trees/README.md
+!thirdparty/TLS2trees/INSTALL_ECOMODEL.md
+thirdparty/pointtree/**
+!thirdparty/pointtree/
+!thirdparty/pointtree/INSTALL_ECOMODEL.md
