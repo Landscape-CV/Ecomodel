@@ -1,0 +1,29 @@
+# Primary: freeze pc_encoder; fine-tune prompt + mask heads.
+mode: decoder_ft
+pretrained_ckpt: ../../thirdparty/checkpoints/point_sam/model.safetensors
+config_name: large
+config_dir: ../../thirdparty/Point-SAM/configs
+
+data_dir: ../pointsam_voxelized
+out_dir: ../pointsam_checkpoints/decoder_ft
+
+num_points: 10000
+num_masks: 2
+batch_size: 1
+num_workers: 0
+max_steps: 2000
+val_every: 100
+log_every: 20
+val_max_crops: 32
+lr: 1.0e-4
+weight_decay: 0.01
+max_grad_norm: 1.0
+seed: 0
+amp: true
+early_stop_patience: 8
+group_number: 512
+group_size: 64
+# VRAM guardrails (RTX 5070 Ti ~17GB): soft trim / hard abort by used fraction
+cuda_mem_fraction: 0.92
+vram_soft_frac: 0.88
+vram_hard_frac: 0.96

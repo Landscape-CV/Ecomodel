@@ -1,0 +1,29 @@
+# Secondary: light full fine-tune (encoder LR 10x lower).
+mode: full_ft
+pretrained_ckpt: ../../thirdparty/checkpoints/point_sam/model.safetensors
+config_name: large
+config_dir: ../../thirdparty/Point-SAM/configs
+
+data_dir: ../pointsam_voxelized
+out_dir: ../pointsam_checkpoints/full_ft
+
+num_points: 10000
+num_masks: 2
+batch_size: 1
+num_workers: 0
+max_steps: 1500
+val_every: 100
+log_every: 20
+val_max_crops: 32
+lr: 5.0e-5
+encoder_lr: 5.0e-6
+weight_decay: 0.01
+max_grad_norm: 1.0
+seed: 0
+amp: true
+early_stop_patience: 6
+group_number: 512
+group_size: 64
+cuda_mem_fraction: 0.92
+vram_soft_frac: 0.88
+vram_hard_frac: 0.96
