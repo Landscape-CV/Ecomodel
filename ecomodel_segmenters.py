@@ -441,11 +441,16 @@ class SegmenterScanline:
 
         default_arguments.update(tuned_arguments)
         segment_point_cloud(tile,**default_arguments)
+        # Ensure host arrays even if segment_point_cloud early-returned on CUDA.
+        if hasattr(tile.segment_labels, "detach"):
+            tile.numpy()
         mask = tile.segment_labels >-2#filters out points that could not be connected, ideal will segment better and this will be uneccesary
         print("UNIQUE LABELS", np.unique(tile.segment_labels))
+        if not np.any(mask):
+            return None, None
         
-        point_cloud_out = tile.cloud[mask]
-        labels_out = tile.segment_labels[mask]
+        point_cloud_out = np.asarray(tile.cloud)[mask]
+        labels_out = np.asarray(tile.segment_labels)[mask]
 
 
         return point_cloud_out, labels_out

@@ -189,6 +189,7 @@ class EcomodelLite:
         snap_grid_size=0.05,
         snap_use_gpu=True,
         tls2trees_use_rgi=True,
+        treex_adapt_synthetic=True,
     ):
         super().__init__()
         if not os.path.isdir(results_folder):
@@ -259,7 +260,10 @@ class EcomodelLite:
                 use_gpu=snap_use_gpu,
             )
         elif segmenter_type == "treex":
-            self.segmenter = SegmenterTreeX(adapt_synthetic=True)
+            # Real TLS: set treex_adapt_synthetic=False for stock TreeXPresetTLS.
+            self.segmenter = SegmenterTreeX(
+                adapt_synthetic=bool(treex_adapt_synthetic)
+            )
         elif segmenter_type == "tls2trees":
             # RGI semantic stand-in for FSCT; disable when leaf-removal already
             # produced a wood-only cloud (set tls2trees_use_rgi=False).

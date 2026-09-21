@@ -82,3 +82,11 @@ thirdparty/TLS2trees/**
 thirdparty/pointtree/**
 !thirdparty/pointtree/
 !thirdparty/pointtree/INSTALL_ECOMODEL.md
+
+# Real TLS/MLS downloads + prepared tiles (large binaries)
+SyntheticPipeline/testdataset/real_raw/**
+!SyntheticPipeline/testdataset/real_raw/
+!SyntheticPipeline/testdataset/real_raw/README.md
+SyntheticPipeline/testdataset/real_instance/**
+!SyntheticPipeline/testdataset/real_instance/
+!SyntheticPipeline/testdataset/real_instance/.gitkeep
