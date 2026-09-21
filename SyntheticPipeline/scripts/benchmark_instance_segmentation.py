@@ -277,6 +277,7 @@ def run_segmenter_on_tile(
     snap_use_gpu: bool = True,
     run_leaf_removal: bool = False,
     results_folder: str = "results",
+    treex_adapt_synthetic: bool = True,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
     from ecomodel_lite import EcomodelLite
 
@@ -298,6 +299,8 @@ def run_segmenter_on_tile(
     elif base_type == "tls2trees":
         # Skip RGI semantic when leaf-removal already produced wood-only input.
         kwargs["tls2trees_use_rgi"] = not run_leaf_removal
+    elif base_type == "treex":
+        kwargs["treex_adapt_synthetic"] = treex_adapt_synthetic
 
     model = EcomodelLite(**kwargs)
 
@@ -561,6 +564,12 @@ def main():
         default=os.path.join(_SP_DIR, "output", "benchmark_instance_predictions"),
         help="Directory for saved prediction clouds (used with --save_predictions)",
     )
+    parser.add_argument(
+        "--treex_stock_tls",
+        action="store_true",
+        help="Use stock TreeXPresetTLS (no synthetic stem-density adaptations). "
+             "Recommended for real RIEGL / MLS plots.",
+    )
     args = parser.parse_args()
 
     base_algs = [a.strip() for a in args.algorithms.split(",") if a.strip()]
@@ -605,7 +614,7 @@ def main():
     if "treex" in base_algs:
         try:
             from ecomodel_segmenters import SegmenterTreeX
-            SegmenterTreeX(adapt_synthetic=True)
+            SegmenterTreeX(adapt_synthetic=not args.treex_stock_tls)
         except Exception as exc:
             print(f"WARNING: treex init failed ({exc}); skipping treex")
             base_algs = [a for a in base_algs if a != "treex"]
@@ -656,6 +665,7 @@ def main():
         "snap_domain": args.snap_domain,
         "snap_grid_size": args.snap_grid_size,
         "snap_use_gpu": not args.no_snap_gpu,
+        "treex_adapt_synthetic": not args.treex_stock_tls,
     }
 
     all_rows: List[Dict] = []
