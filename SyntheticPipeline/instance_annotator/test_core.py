@@ -14,8 +14,18 @@ from instance_annotator.labels import LabelEditor, compact_ids
 from instance_annotator.viz import (
     build_plotly_figure,
     downsample_indices,
+    material_colors,
     parse_plotly_point_indices,
     selection_from_click,
+)
+from instance_annotator.wood_leaf import (
+    classify_eigen,
+    classify_intensity_percentile,
+    classify_intensity_threshold,
+    classify_otsu,
+    classify_stem_grow,
+    classify_wood_leaf,
+    mask_counts,
 )
 
 
@@ -40,6 +50,82 @@ def test_labels():
     ed.mark_nontree(m)
     assert np.all(ed.labels[m] == -1)
     print("labels ok")
+
+
+def test_wood_leaf_intensity():
+    rng = np.random.default_rng(0)
+    xyz = rng.normal(size=(500, 3))
+    inten = np.linspace(0.0, 1.0, 500)
+    wood, leaf = classify_intensity_threshold(xyz, inten, 0.5)
+    assert len(wood) == 500 and len(leaf) == 500
+    assert wood.dtype == bool and leaf.dtype == bool
+    assert np.all(wood == ~leaf)
+    assert int(wood.sum()) == 250
+
+    wood_p, leaf_p = classify_intensity_percentile(xyz, inten, percentile=40.0)
+    assert len(wood_p) == 500
+    assert np.all(wood_p | leaf_p)
+    assert not np.any(wood_p & leaf_p)
+    counts = mask_counts(wood_p, leaf_p)
+    assert counts["wood"] + counts["leaf"] + counts["unknown"] == 500
+
+    wood2, leaf2 = classify_wood_leaf("percentile", xyz, inten, percentile=40.0)
+    assert np.array_equal(wood2, wood_p) and np.array_equal(leaf2, leaf_p)
+
+    wood_o, leaf_o = classify_otsu(xyz, inten)
+    assert len(wood_o) == 500 and np.all(wood_o == ~leaf_o)
+
+    # Material colors length + wood tint
+    rgb = material_colors(wood_p, leaf_p)
+    assert rgb.shape == (500, 3)
+    assert np.allclose(rgb[wood_p][0], np.array([139 / 255.0, 90 / 255.0, 43 / 255.0]))
+    print("wood/leaf intensity ok", counts)
+
+
+def test_wood_leaf_geometry():
+    rng = np.random.default_rng(1)
+    # Vertical stem cylinder + scattered canopy
+    n_stem, n_leaf = 800, 1200
+    th = rng.uniform(0, 2 * np.pi, n_stem)
+    z = rng.uniform(0, 8, n_stem)
+    r = 0.12 + rng.normal(0, 0.01, n_stem)
+    stem = np.column_stack([r * np.cos(th), r * np.sin(th), z])
+    leaf = rng.normal(size=(n_leaf, 3)) * np.array([1.5, 1.5, 1.0]) + np.array([0, 0, 7])
+    xyz = np.vstack([stem, leaf])
+    inten = np.concatenate([np.full(n_stem, 0.9), rng.random(n_leaf) * 0.2])
+
+    w_e, l_e = classify_eigen(xyz, inten, max_points=5000)
+    assert len(w_e) == len(xyz) and w_e.dtype == bool
+    # Stem should retain a non-trivial wood fraction
+    assert int(w_e[:n_stem].sum()) > 50
+
+    w_s, l_s = classify_stem_grow(xyz, inten, max_points=5000, grow_radius=0.4)
+    assert len(w_s) == len(xyz)
+    assert int(w_s[:n_stem].sum()) > 50
+    print("wood/leaf geometry ok", int(w_e.sum()), int(w_s.sum()))
+
+
+
+def test_viz_material_filter():
+    xyz = np.random.randn(200, 3)
+    labels = np.full(200, 0, dtype=np.int32)
+    labels[100:] = -1
+    inten = np.linspace(0, 1, 200)
+    wood, leaf = classify_intensity_threshold(xyz, inten, 0.5)
+    idx = downsample_indices(200, 200)
+    fig, _ = build_plotly_figure(
+        xyz,
+        labels,
+        idx,
+        wood_mask=wood,
+        leaf_mask=leaf,
+        show_wood=True,
+        show_leaf=False,
+        color_mode="material",
+        hide_nontree=False,
+    )
+    assert fig.data and len(fig.data[0].x) == int((~leaf).sum())
+    print("viz material filter ok")
 
 
 def test_viz_and_pick():
@@ -91,6 +177,9 @@ def test_save_roundtrip(tmp_path: Path | None = None):
 if __name__ == "__main__":
     test_path_resolve()
     test_labels()
+    test_wood_leaf_intensity()
+    test_wood_leaf_geometry()
+    test_viz_material_filter()
     test_viz_and_pick()
     test_save_roundtrip()
     print("ALL PASS")

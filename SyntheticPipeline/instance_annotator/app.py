@@ -6,6 +6,7 @@ Streamlit TLS instance annotator (bugfix rewrite).
 """
 from __future__ import annotations
 
+import importlib
 import sys
 import tempfile
 from pathlib import Path
@@ -20,9 +21,27 @@ for p in (str(_ROOT), str(_SP_DIR)):
 
 import streamlit as st
 
+# Streamlit re-executes this script on edit but keeps sibling modules cached.
+# Reload so viz / wood_leaf signature changes apply without a full server restart.
+import instance_annotator.io as _io
+import instance_annotator.labels as _labels
+import instance_annotator.segment as _segment
+import instance_annotator.viz as _viz
+import instance_annotator.wood_leaf as _wood_leaf
+
+for _mod in (_io, _labels, _segment, _viz, _wood_leaf):
+    importlib.reload(_mod)
+
 from instance_annotator.io import load_cloud, load_tile_prefix, save_tile
 from instance_annotator.labels import LabelEditor
 from instance_annotator.segment import METHODS, run_method
+from instance_annotator.wood_leaf import (
+    GB_MAX_POINTS,
+    RGI_MAX_POINTS,
+    METHODS as WOOD_LEAF_METHODS,
+    classify_wood_leaf,
+    mask_counts,
+)
 from instance_annotator.viz import (
     build_plotly_figure,
     downsample_indices,
@@ -33,8 +52,8 @@ from instance_annotator.viz import (
 st.set_page_config(page_title="TLS Instance Annotator", layout="wide")
 st.title("TLS Instance Annotator")
 st.caption(
-    "Load TLS → optional segmentation → inspect/edit in 3D → export "
-    "`*_scan.laz` + `*_instances.npy`."
+    "Load TLS → optional wood/leaf reference → optional segmentation → "
+    "inspect/edit in 3D → export `*_scan.laz` + `*_instances.npy`."
 )
 
 
@@ -55,6 +74,9 @@ def _init_state() -> None:
         "last_pick_sig": None,
         "fig_rev": 0,
         "status_msg": "",
+        "wood_mask": None,
+        "leaf_mask": None,
+        "wood_leaf_method": None,
     }
     for k, v in defaults.items():
         ss.setdefault(k, v)
@@ -93,6 +115,9 @@ def _set_cloud(xyz, intensity, labels, name: str, meta: dict, method: str = "man
     st.session_state.last_pick_sig = None
     st.session_state.fig_rev = int(st.session_state.get("fig_rev", 0)) + 1
     st.session_state.loaded = True
+    st.session_state.wood_mask = None
+    st.session_state.leaf_mask = None
+    st.session_state.wood_leaf_method = None
 
 
 def _bump_fig() -> None:
@@ -211,7 +236,165 @@ with st.sidebar:
         except Exception as exc:
             st.exception(exc)
 
-    st.header("2. Segment")
+    st.header("2. Wood / Leaf (reference)")
+    st.caption(
+        "Optional reference overlay only — does not change instance labels. "
+        "Re-run replaces masks."
+    )
+    wl_labels = {
+        "percentile": "Intensity percentile",
+        "intensity": "Intensity threshold",
+        "otsu": "Otsu (intensity)",
+        "eigen": "Eigenfeatures (geom)",
+        "stem_grow": "Stem-grow (verticality)",
+        "rgi": "RGI",
+        "gbseparation": "GBSeparation",
+    }
+    wl_method = st.selectbox(
+        "Method",
+        list(WOOD_LEAF_METHODS),
+        index=0,
+        format_func=lambda k: wl_labels.get(k, k),
+        key="wl_method",
+        disabled=not st.session_state.loaded,
+    )
+    wl_percentile = 40.0
+    wl_threshold = None
+    wl_lin = 0.45
+    wl_vert = 0.55
+    wl_curv = 0.12
+    wl_hperc = 25.0
+    wl_grow_r = 0.35
+    if wl_method == "percentile":
+        wl_percentile = st.slider(
+            "Wood ≥ percentile",
+            min_value=5.0,
+            max_value=95.0,
+            value=40.0,
+            step=1.0,
+            key="wl_percentile",
+            disabled=not st.session_state.loaded,
+        )
+    elif wl_method == "intensity":
+        med = 0.0
+        if st.session_state.loaded and st.session_state.intensity is not None:
+            med = float(np.median(st.session_state.intensity))
+        wl_threshold = st.number_input(
+            "Intensity threshold (wood ≥ T)",
+            value=med,
+            key="wl_threshold",
+            disabled=not st.session_state.loaded,
+            help="Default = cloud median intensity.",
+        )
+    elif wl_method == "otsu":
+        st.caption("Auto intensity split (wood = brighter class). Fast on full cloud.")
+    elif wl_method == "eigen":
+        st.caption(
+            "Wood = high linearity + verticality + low curvature. "
+            "Tune sliders if stems look thin/thick."
+        )
+        wl_lin = st.slider("Min linearity", 0.1, 0.9, 0.45, 0.05, key="wl_lin")
+        wl_vert = st.slider("Min verticality", 0.1, 0.95, 0.55, 0.05, key="wl_vert")
+        wl_curv = st.slider("Max curvature", 0.02, 0.4, 0.12, 0.02, key="wl_curv")
+    elif wl_method == "stem_grow":
+        st.caption(
+            "Seed low-Z vertical points, grow upward by radius. Strong trunk reference."
+        )
+        wl_vert = st.slider("Min verticality", 0.3, 0.95, 0.65, 0.05, key="wl_vert_sg")
+        wl_hperc = st.slider("Seed height ≤ percentile", 5.0, 50.0, 25.0, 1.0, key="wl_hperc")
+        wl_grow_r = st.slider("Grow radius (m)", 0.1, 1.0, 0.35, 0.05, key="wl_grow_r")
+    elif wl_method == "rgi":
+        n_pts = int(len(st.session_state.xyz)) if st.session_state.loaded else 0
+        if n_pts > RGI_MAX_POINTS:
+            st.caption(
+                f"Cloud has {n_pts:,} pts — voxel+intensity subsample to {RGI_MAX_POINTS:,}, "
+                "then NN-paint. RGI often weak on multi-tree plots; try Eigen / Stem-grow."
+            )
+        else:
+            st.caption("Region-growing wood/leaf (in-memory).")
+    elif wl_method == "gbseparation":
+        n_pts = int(len(st.session_state.xyz)) if st.session_state.loaded else 0
+        if n_pts > GB_MAX_POINTS:
+            st.caption(
+                f"Cloud has {n_pts:,} pts — subsample to {GB_MAX_POINTS:,}, then NN-paint. "
+                "Prefer Eigen / Stem-grow / Intensity on large plots."
+            )
+        else:
+            st.caption("Best on small / single-tree clouds.")
+    if st.button(
+        "Run wood/leaf",
+        disabled=not st.session_state.loaded,
+        key="btn_wood_leaf",
+    ):
+        with st.spinner(f"Running wood/leaf ({wl_labels.get(wl_method, wl_method)})…"):
+            try:
+                wood, leaf = classify_wood_leaf(
+                    wl_method,
+                    st.session_state.xyz,
+                    st.session_state.intensity,
+                    threshold=wl_threshold,
+                    percentile=wl_percentile,
+                    linearity_min=wl_lin,
+                    verticality_min=wl_vert,
+                    curvature_max=wl_curv,
+                    height_percentile=wl_hperc,
+                    grow_radius=wl_grow_r,
+                )
+                st.session_state.wood_mask = wood
+                st.session_state.leaf_mask = leaf
+                st.session_state.wood_leaf_method = wl_method
+                counts = mask_counts(wood, leaf)
+                n_cloud = len(st.session_state.xyz) if st.session_state.xyz is not None else 0
+                extra = ""
+                if wl_method == "gbseparation" and n_cloud > GB_MAX_POINTS:
+                    extra = f" (sub->{GB_MAX_POINTS:,})"
+                elif wl_method == "rgi" and n_cloud > RGI_MAX_POINTS:
+                    extra = f" (sub->{RGI_MAX_POINTS:,})"
+                elif wl_method in ("eigen", "stem_grow") and n_cloud > 200_000:
+                    extra = " (voxel sub + NN)"
+                st.session_state.status_msg = (
+                    f"Wood/leaf ({wl_labels.get(wl_method, wl_method)}{extra}): "
+                    f"wood={counts['wood']:,} leaf={counts['leaf']:,} "
+                    f"unknown={counts['unknown']:,}"
+                )
+                _bump_fig()
+                st.rerun()
+            except Exception as exc:
+                st.exception(exc)
+
+    has_wl = (
+        st.session_state.wood_mask is not None
+        and st.session_state.leaf_mask is not None
+        and st.session_state.loaded
+    )
+    show_wood = st.checkbox(
+        "Show wood",
+        value=True,
+        key="show_wood",
+        disabled=not has_wl,
+    )
+    show_leaf = st.checkbox(
+        "Show leaves",
+        value=True,
+        key="show_leaf",
+        disabled=not has_wl,
+    )
+    color_by = st.radio(
+        "Color by",
+        ["Instance IDs", "Wood / Leaf"],
+        index=0,
+        key="color_by",
+        disabled=not has_wl,
+        horizontal=True,
+    )
+    if has_wl:
+        c = mask_counts(st.session_state.wood_mask, st.session_state.leaf_mask)
+        st.caption(
+            f"Last run: {st.session_state.wood_leaf_method} · "
+            f"wood={c['wood']:,} leaf={c['leaf']:,} unknown={c['unknown']:,}"
+        )
+
+    st.header("3. Segment")
     method = st.selectbox("Method", list(METHODS), index=list(METHODS).index("treelearn"))
     leaf_removal = st.checkbox("Leaf removal (RGI)", value=False)
     treex_stock = st.checkbox("TreeX stock TLS (real data)", value=True)
@@ -237,7 +420,7 @@ with st.sidebar:
             except Exception as exc:
                 st.exception(exc)
 
-    st.header("3. Export")
+    st.header("4. Export")
     out_dir = st.text_input(
         "Output directory",
         value=str(_SP_DIR / "output" / "annotator_exports"),
@@ -448,6 +631,14 @@ else:
                 st.rerun()
 
     with left:
+        color_mode = (
+            "material"
+            if (
+                st.session_state.wood_mask is not None
+                and color_by == "Wood / Leaf"
+            )
+            else "instance"
+        )
         fig, _origin = build_plotly_figure(
             xyz,
             ed.labels,
@@ -455,6 +646,11 @@ else:
             highlight_id=st.session_state.highlight_id,
             selection_mask_full=st.session_state.selection,
             hide_nontree=hide_nt,
+            wood_mask=st.session_state.wood_mask,
+            leaf_mask=st.session_state.leaf_mask,
+            show_wood=bool(show_wood) if st.session_state.wood_mask is not None else True,
+            show_leaf=bool(show_leaf) if st.session_state.leaf_mask is not None else True,
+            color_mode=color_mode,
             title=f"{st.session_state.name} · {st.session_state.source_method}",
         )
         event = st.plotly_chart(
@@ -483,5 +679,7 @@ else:
 
         st.caption(
             "Plot: click points (Brush select tool) or use seed index. "
-            "Magenta = selection, yellow = highlight. Camera stays put across edits."
+            "Magenta = selection, yellow = highlight. "
+            "Wood/Leaf colors: brown = wood, green = leaf, gray = unknown. "
+            "Camera stays put across edits."
         )

@@ -38,22 +38,40 @@ Browser opens locally (default `http://localhost:8501`).
      - **Run segmentation** — blank labels, then run a method.
      - **Manual tagging only** — start all `-1`, paint trees yourself.
      - **Load existing GT** — edit an existing `*_instances.npy`.
-2. **Segment** (optional) — choose `scanline` / `treelearn` / `treex` / `tls2trees` / `pointsam`, optional leaf-removal, then **Run method**. TreeX uses **stock TLS** by default (good for real plots).
-3. **Examine** — Plotly 3D view (downsampled for speed). Instance list on the right; click an ID to highlight / select that tree.
-4. **Edit**
+2. **Wood / Leaf (reference, optional)** — separate wood vs leaves as a visual aid (does **not** change instance labels):
+   - Methods: **Intensity percentile** (default), **Intensity threshold**, **Otsu**, **Eigenfeatures**, **Stem-grow**, **RGI**, **GBSeparation**.
+   - **Run wood/leaf**, then toggle **Show wood** / **Show leaves**, and **Color by** Instance IDs or Wood / Leaf (brown = wood, green = leaf, gray = unknown).
+   - On large plots prefer **Eigenfeatures** / **Stem-grow** / intensity methods; RGI is often blotchy after downsampling.
+3. **Segment** (optional) — choose `scanline` / `treelearn` / `treex` / `tls2trees` / `pointsam`, optional leaf-removal preprocess, then **Run method**. TreeX uses **stock TLS** by default (good for real plots).
+4. **Examine** — Plotly 3D view (downsampled for speed). Instance list on the right; click an ID to highlight / select that tree.
+5. **Edit**
    - **Brush select:** click points in the plot (Streamlit ≥1.35) or enter a **seed point index** from the hover tooltip and **Add brush from seed**.
    - **Reassign** selection → another ID (or `-1`).
    - **Merge** source tree → target.
    - **Paint new / split** — selection becomes a new tree ID.
    - **Mark non-tree** — selection → `-1`.
    - **Undo / Redo** / compact IDs.
-5. **Export** — writes:
+6. **Export** — writes:
    - `{name}_scan.laz`
    - `{name}_instances.npy` (`int32`, trees `>=0`, non-tree `-1`)
    - `{name}_meta.json`
    - `{name}_preview.ply` (colored)
 
 That triplet is loadable by `scripts/benchmark_instance_segmentation.py`.
+
+## Wood / leaf methods
+
+| Method | Notes |
+|--------|--------|
+| Intensity percentile | Wood = intensity ≥ P-th percentile (default P=40). Fast exploration. |
+| Intensity threshold | Wood = intensity ≥ absolute T (default = cloud median). |
+| Otsu | Auto intensity threshold from histogram. Fast on full cloud. |
+| Eigenfeatures | Wood = high linearity + verticality + low curvature (kNN PCA). Voxel-subsample on large clouds. |
+| Stem-grow | Seed low-Z vertical points, grow by radius. Strong trunk reference. |
+| RGI | Region-growing; voxel+intensity subsample then NN-paint. Often weak on multi-tree plots. |
+| GBSeparation | Graph + root-path wood. Subsample on large tiles; prefer Eigen/Stem-grow/Intensity. |
+
+Reference overlay only. Segment’s **Leaf removal (RGI)** checkbox still strips leaves before an instance method run.
 
 ## Label convention
 
