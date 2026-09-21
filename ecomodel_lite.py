@@ -375,7 +375,8 @@ class EcomodelLite:
 
             print(tree_cloud.shape[0])
             # Run existing classification pipeline
-            classify_wood_leaf(str(tmp_ply), save_dir=str(tmp_results), show_plots=False, **input_params)
+            params = input_params if input_params is not None else self._rgi_params
+            classify_wood_leaf(str(tmp_ply), save_dir=str(tmp_results), show_plots=False, **params)
 
             # Read back the classified clouds
             wood_file = tmp_results / "segment_wood.ply"

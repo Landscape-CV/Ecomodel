@@ -82,6 +82,25 @@ def _rgb_css(colors: np.ndarray) -> List[str]:
     return [f"rgb({r},{g},{b})" for r, g, b in c]
 
 
+# Material reference colors (wood / leaf / unknown)
+_WOOD_RGB = np.array([139 / 255.0, 90 / 255.0, 43 / 255.0])   # #8B5A2B
+_LEAF_RGB = np.array([46 / 255.0, 139 / 255.0, 87 / 255.0])   # #2E8B57
+_UNKNOWN_RGB = np.array([0.55, 0.55, 0.55])
+
+
+def material_colors(
+    wood_mask: np.ndarray,
+    leaf_mask: np.ndarray,
+) -> np.ndarray:
+    """RGB in [0,1]: wood brown, leaf green, neither gray. Wood wins on overlap."""
+    wood = np.asarray(wood_mask, dtype=bool)
+    leaf = np.asarray(leaf_mask, dtype=bool)
+    rgb = np.tile(_UNKNOWN_RGB, (len(wood), 1))
+    rgb[leaf & ~wood] = _LEAF_RGB
+    rgb[wood] = _WOOD_RGB
+    return rgb
+
+
 def build_plotly_figure(
     xyz: np.ndarray,
     labels: np.ndarray,
@@ -90,6 +109,11 @@ def build_plotly_figure(
     highlight_id: Optional[int] = None,
     selection_mask_full: Optional[np.ndarray] = None,
     hide_nontree: bool = False,
+    wood_mask: Optional[np.ndarray] = None,
+    leaf_mask: Optional[np.ndarray] = None,
+    show_wood: bool = True,
+    show_leaf: bool = True,
+    color_mode: str = "instance",
     point_size: float = 1.8,
     title: str = "Instance labels",
     max_rgb_points: int = 200_000,
@@ -99,6 +123,10 @@ def build_plotly_figure(
 
     ``display_idx`` maps figure point i → full-cloud index (before hide filter).
     Customdata columns: [full_idx, label] as plain Python ints for Streamlit.
+
+    When ``wood_mask`` / ``leaf_mask`` are set, ``show_wood`` / ``show_leaf``
+    filter visibility (unknown points always kept). ``color_mode`` is
+    ``"instance"`` or ``"material"``.
     """
     import plotly.graph_objects as go
     import plotly.express as px
@@ -117,6 +145,24 @@ def build_plotly_figure(
     keep = np.ones(len(idx), dtype=bool)
     if hide_nontree:
         keep &= sub_lab >= 0
+
+    has_material = (
+        wood_mask is not None
+        and leaf_mask is not None
+        and len(wood_mask) == len(xyz)
+        and len(leaf_mask) == len(xyz)
+    )
+    if has_material:
+        w_full = np.asarray(wood_mask, dtype=bool)
+        l_full = np.asarray(leaf_mask, dtype=bool)
+        sub_w = w_full[idx]
+        sub_l = l_full[idx]
+        # Hide toggled-off classes; unknown (neither) always shown
+        if not show_wood:
+            keep &= ~sub_w
+        if not show_leaf:
+            keep &= ~sub_l
+
     if not np.any(keep):
         fig = go.Figure()
         fig.update_layout(title=f"{title} (no points to show)")
@@ -126,7 +172,12 @@ def build_plotly_figure(
     sub_lab = sub_lab[keep]
     idx = idx[keep]
 
-    colors = instance_colors(sub_lab)
+    mode = str(color_mode or "instance").lower()
+    if has_material and mode == "material":
+        colors = material_colors(w_full[idx], l_full[idx])
+    else:
+        colors = instance_colors(sub_lab)
+
     if highlight_id is not None:
         hi = sub_lab == int(highlight_id)
         colors[hi] = np.array([1.0, 0.92, 0.2])
@@ -142,7 +193,8 @@ def build_plotly_figure(
     # Always honor selection/highlight colors. Cap CSS rgb list size for speed;
     # above that, quantize to a discrete colorscale keyed by visual class.
     n = len(sub_xyz)
-    if n <= max_rgb_points:
+    use_css = n <= max_rgb_points or (has_material and mode == "material")
+    if use_css:
         marker = dict(
             size=point_size,
             opacity=0.92,
