@@ -1,0 +1,7 @@
+[server]
+# Large TLS LAZ/PLY uploads (MB). Path-based load bypasses this entirely.
+maxUploadSize = 8192
+maxMessageSize = 1024
+
+[browser]
+gatherUsageStats = false
