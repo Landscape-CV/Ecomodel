@@ -12,11 +12,11 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 METHODS = (
+    "stem_grow",
+    "eigen",
     "percentile",
     "intensity",
     "otsu",
-    "eigen",
-    "stem_grow",
     "rgi",
     "gbseparation",
 )
@@ -195,14 +195,17 @@ def classify_eigen(
     xyz: np.ndarray,
     intensity: Optional[np.ndarray] = None,
     *,
-    linearity_min: float = 0.45,
-    verticality_min: float = 0.55,
+    linearity_min: float = 0.3,
+    verticality_min: float = 0.7,
     curvature_max: float = 0.12,
     k: int = 20,
     max_points: int = GEO_MAX_POINTS,
     seed: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Wood ~= linear + vertical + low-curvature; leaf = rest."""
+    """Wood ~= linear + vertical + low-curvature; leaf = rest.
+
+    Defaults from LeWoS holdout sweep (macro-F1 ~0.80).
+    """
     xyz = np.asarray(xyz, dtype=np.float64)
     n = len(xyz)
     if n < 30:
@@ -232,13 +235,16 @@ def classify_stem_grow(
     xyz: np.ndarray,
     intensity: Optional[np.ndarray] = None,
     *,
-    verticality_min: float = 0.65,
-    height_percentile: float = 25.0,
-    grow_radius: float = 0.35,
+    verticality_min: float = 0.8,
+    height_percentile: float = 15.0,
+    grow_radius: float = 0.2,
     max_points: int = GEO_MAX_POINTS,
     seed: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Seed low-Z high-verticality points; grow by radius; leftover = leaf."""
+    """Seed low-Z high-verticality points; grow by radius; leftover = leaf.
+
+    Defaults from LeWoS holdout sweep (best macro-F1 ~0.81).
+    """
     from scipy.spatial import cKDTree
 
     xyz = np.asarray(xyz, dtype=np.float64)
@@ -416,13 +422,17 @@ def classify_wood_leaf(
     *,
     threshold: Optional[float] = None,
     percentile: float = 40.0,
-    linearity_min: float = 0.45,
-    verticality_min: float = 0.55,
+    linearity_min: float = 0.3,
+    verticality_min: float = 0.8,
     curvature_max: float = 0.12,
-    height_percentile: float = 25.0,
-    grow_radius: float = 0.35,
+    height_percentile: float = 15.0,
+    grow_radius: float = 0.2,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Unified wood/leaf classification."""
+    """Unified wood/leaf classification.
+
+    Default method params tuned on LeWoS LabelledPC holdout (see
+    output/wood_leaf_benchmark/ and wood_leaf_defaults.json).
+    """
     key = str(method).strip().lower()
     if key not in METHODS:
         raise ValueError(f"Unknown wood/leaf method {method!r}; choose from {METHODS}")

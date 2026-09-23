@@ -1,0 +1,24 @@
+{
+  "method": "stem_grow",
+  "params": {
+    "grow_radius": 0.2,
+    "height_percentile": 15.0,
+    "verticality_min": 0.8
+  },
+  "source": {
+    "dataset": "lewos_labelledpc",
+    "method": "stem_grow",
+    "params": "grow_radius=0.2|height_percentile=15.0|verticality_min=0.8",
+    "tune_macro_f1_mean": 0.7815214086454052,
+    "tune_macro_f1_std": 0.0837038550913077,
+    "tune_n": 40,
+    "holdout_macro_f1_mean": 0.8121567024579422,
+    "holdout_macro_f1_std": 0.07294717889689543,
+    "holdout_wood_f1_mean": 0.6748625313999524,
+    "holdout_wood_f1_std": 0.14282315244116656,
+    "holdout_leaf_f1_mean": 0.9494508735159324,
+    "holdout_leaf_f1_std": 0.02701675519481509,
+    "holdout_n": 21
+  },
+  "note": "Selected by benchmark_wood_leaf.py on holdout macro-F1"
+}

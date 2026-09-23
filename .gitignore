@@ -90,3 +90,9 @@ SyntheticPipeline/testdataset/real_raw/**
 SyntheticPipeline/testdataset/real_instance/**
 !SyntheticPipeline/testdataset/real_instance/
 !SyntheticPipeline/testdataset/real_instance/.gitkeep
+SyntheticPipeline/testdataset/lewos_labelled/**
+!SyntheticPipeline/testdataset/lewos_labelled/
+!SyntheticPipeline/testdataset/lewos_labelled/.gitkeep
+SyntheticPipeline/testdataset/heidelberg_woodleaf/**
+!SyntheticPipeline/testdataset/heidelberg_woodleaf/
+!SyntheticPipeline/testdataset/heidelberg_woodleaf/.gitkeep

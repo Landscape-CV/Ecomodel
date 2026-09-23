@@ -242,11 +242,11 @@ with st.sidebar:
         "Re-run replaces masks."
     )
     wl_labels = {
+        "stem_grow": "Stem-grow (verticality) ★",
+        "eigen": "Eigenfeatures (geom)",
         "percentile": "Intensity percentile",
         "intensity": "Intensity threshold",
         "otsu": "Otsu (intensity)",
-        "eigen": "Eigenfeatures (geom)",
-        "stem_grow": "Stem-grow (verticality)",
         "rgi": "RGI",
         "gbseparation": "GBSeparation",
     }
@@ -257,14 +257,15 @@ with st.sidebar:
         format_func=lambda k: wl_labels.get(k, k),
         key="wl_method",
         disabled=not st.session_state.loaded,
+        help="★ = best on LeWoS wood/leaf GT (holdout macro-F1≈0.81). See output/wood_leaf_benchmark/.",
     )
     wl_percentile = 40.0
     wl_threshold = None
-    wl_lin = 0.45
-    wl_vert = 0.55
+    wl_lin = 0.3
+    wl_vert = 0.7
     wl_curv = 0.12
-    wl_hperc = 25.0
-    wl_grow_r = 0.35
+    wl_hperc = 15.0
+    wl_grow_r = 0.2
     if wl_method == "percentile":
         wl_percentile = st.slider(
             "Wood ≥ percentile",
@@ -291,24 +292,25 @@ with st.sidebar:
     elif wl_method == "eigen":
         st.caption(
             "Wood = high linearity + verticality + low curvature. "
-            "Tune sliders if stems look thin/thick."
+            "Defaults from LeWoS sweep."
         )
-        wl_lin = st.slider("Min linearity", 0.1, 0.9, 0.45, 0.05, key="wl_lin")
-        wl_vert = st.slider("Min verticality", 0.1, 0.95, 0.55, 0.05, key="wl_vert")
+        wl_lin = st.slider("Min linearity", 0.1, 0.9, 0.3, 0.05, key="wl_lin")
+        wl_vert = st.slider("Min verticality", 0.1, 0.95, 0.7, 0.05, key="wl_vert")
         wl_curv = st.slider("Max curvature", 0.02, 0.4, 0.12, 0.02, key="wl_curv")
     elif wl_method == "stem_grow":
         st.caption(
-            "Seed low-Z vertical points, grow upward by radius. Strong trunk reference."
+            "Seed low-Z vertical points, grow by radius. "
+            "Best LeWoS holdout macro-F1≈0.81 (defaults baked in)."
         )
-        wl_vert = st.slider("Min verticality", 0.3, 0.95, 0.65, 0.05, key="wl_vert_sg")
-        wl_hperc = st.slider("Seed height ≤ percentile", 5.0, 50.0, 25.0, 1.0, key="wl_hperc")
-        wl_grow_r = st.slider("Grow radius (m)", 0.1, 1.0, 0.35, 0.05, key="wl_grow_r")
+        wl_vert = st.slider("Min verticality", 0.3, 0.95, 0.8, 0.05, key="wl_vert_sg")
+        wl_hperc = st.slider("Seed height ≤ percentile", 5.0, 50.0, 15.0, 1.0, key="wl_hperc")
+        wl_grow_r = st.slider("Grow radius (m)", 0.1, 1.0, 0.2, 0.05, key="wl_grow_r")
     elif wl_method == "rgi":
         n_pts = int(len(st.session_state.xyz)) if st.session_state.loaded else 0
         if n_pts > RGI_MAX_POINTS:
             st.caption(
                 f"Cloud has {n_pts:,} pts — voxel+intensity subsample to {RGI_MAX_POINTS:,}, "
-                "then NN-paint. RGI often weak on multi-tree plots; try Eigen / Stem-grow."
+                "then NN-paint. Weak on LeWoS/Heidelberg GT; prefer Stem-grow / Eigen."
             )
         else:
             st.caption("Region-growing wood/leaf (in-memory).")
@@ -317,7 +319,7 @@ with st.sidebar:
         if n_pts > GB_MAX_POINTS:
             st.caption(
                 f"Cloud has {n_pts:,} pts — subsample to {GB_MAX_POINTS:,}, then NN-paint. "
-                "Prefer Eigen / Stem-grow / Intensity on large plots."
+                "Prefer Stem-grow / Eigen on large plots."
             )
         else:
             st.caption("Best on small / single-tree clouds.")

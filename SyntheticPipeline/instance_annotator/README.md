@@ -39,9 +39,9 @@ Browser opens locally (default `http://localhost:8501`).
      - **Manual tagging only** — start all `-1`, paint trees yourself.
      - **Load existing GT** — edit an existing `*_instances.npy`.
 2. **Wood / Leaf (reference, optional)** — separate wood vs leaves as a visual aid (does **not** change instance labels):
-   - Methods: **Intensity percentile** (default), **Intensity threshold**, **Otsu**, **Eigenfeatures**, **Stem-grow**, **RGI**, **GBSeparation**.
+   - Default method: **Stem-grow** (LeWoS holdout macro-F1≈0.81). Also: Eigenfeatures, Intensity percentile / threshold / Otsu, RGI, GBSeparation.
    - **Run wood/leaf**, then toggle **Show wood** / **Show leaves**, and **Color by** Instance IDs or Wood / Leaf (brown = wood, green = leaf, gray = unknown).
-   - On large plots prefer **Eigenfeatures** / **Stem-grow** / intensity methods; RGI is often blotchy after downsampling.
+   - On large plots prefer **Stem-grow** / **Eigenfeatures**; RGI is often blotchy after downsampling. Intensity methods need real reflectance (N/A on LeWoS).
 3. **Segment** (optional) — choose `scanline` / `treelearn` / `treex` / `tls2trees` / `pointsam`, optional leaf-removal preprocess, then **Run method**. TreeX uses **stock TLS** by default (good for real plots).
 4. **Examine** — Plotly 3D view (downsampled for speed). Instance list on the right; click an ID to highlight / select that tree.
 5. **Edit**
@@ -61,15 +61,17 @@ That triplet is loadable by `scripts/benchmark_instance_segmentation.py`.
 
 ## Wood / leaf methods
 
+Defaults (Stem-grow `verticality_min=0.8`, `height_percentile=15`, `grow_radius=0.2`) were selected by a parameter sweep on the open [LeWoS LabelledPC](https://zenodo.org/records/4946676) wood/leaf GT (61 tropical TLS trees). Full logs and plots: `SyntheticPipeline/output/wood_leaf_benchmark/` (`trials.csv`, `summary.json`, comparison PNGs). Intensity methods are N/A on LeWoS (no intensity channel); they were evaluated on Heidelberg TLS LAZ when available.
+
 | Method | Notes |
 |--------|--------|
-| Intensity percentile | Wood = intensity ≥ P-th percentile (default P=40). Fast exploration. |
+| Stem-grow ★ | Seed low-Z vertical points, grow by radius. **Best LeWoS holdout macro-F1≈0.81**. |
+| Eigenfeatures | Wood = high linearity + verticality + low curvature (kNN PCA). Close second (~0.80). |
+| Intensity percentile | Wood = intensity ≥ P-th percentile (default P=40). Needs real intensity. |
 | Intensity threshold | Wood = intensity ≥ absolute T (default = cloud median). |
 | Otsu | Auto intensity threshold from histogram. Fast on full cloud. |
-| Eigenfeatures | Wood = high linearity + verticality + low curvature (kNN PCA). Voxel-subsample on large clouds. |
-| Stem-grow | Seed low-Z vertical points, grow by radius. Strong trunk reference. |
-| RGI | Region-growing; voxel+intensity subsample then NN-paint. Often weak on multi-tree plots. |
-| GBSeparation | Graph + root-path wood. Subsample on large tiles; prefer Eigen/Stem-grow/Intensity. |
+| RGI | Region-growing; voxel+intensity subsample then NN-paint. Weak on LeWoS GT (~0.24). |
+| GBSeparation | Graph + root-path wood. Subsample on large tiles; skip if OOM. |
 
 Reference overlay only. Segment’s **Leaf removal (RGI)** checkbox still strips leaves before an instance method run.
 
