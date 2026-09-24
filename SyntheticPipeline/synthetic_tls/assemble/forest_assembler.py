@@ -1,22 +1,23 @@
-import json
-import os
-import random
 import argparse
+import json
+import random
+import sys
 import warnings
 from pathlib import Path
-from typing import Tuple, List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import psutil
-import sys
 
 try:
     import trimesh
 except ImportError:
     warnings.warn("trimesh is not installed. Please 'pip install trimesh' to run ForestAssembler.")
 
+from synthetic_tls.constants import CLUTTER_INSTANCE_ID, GROUND_INSTANCE_ID
 
-GROUND_INSTANCE_ID = -1
-CLUTTER_INSTANCE_ID = -2  # reserved for Phase-2 non-veg props
+# Re-export for callers that imported from forest_assembler historically.
+__all__ = ["CLUTTER_INSTANCE_ID", "ForestAssembler", "GROUND_INSTANCE_ID"]
 
 
 def _species_from_asset_stem(stem: str) -> str:
@@ -36,6 +37,7 @@ class ForestAssembler:
     Exports a per-face ``{scene}_face_tree_ids.npy`` map so LiDAR hits can be
     labeled with tree instance IDs (ground faces are ``-1``).
     """
+
     def __init__(self, asset_dir="SyntheticPipeline/output/assets", output_dir="SyntheticPipeline/output/scenes"):
         self.asset_dir = Path(asset_dir)
         self.output_dir = Path(output_dir)
@@ -110,7 +112,6 @@ class ForestAssembler:
                     continue
             return x, y
 
-        # Fallback: unconstrained random
         return random.uniform(-half_x, half_x), random.uniform(-half_y, half_y)
 
     @staticmethod
@@ -144,16 +145,6 @@ class ForestAssembler:
     ) -> Optional[Dict[str, Any]]:
         """
         Generates a forest scene mesh and global ground truth JSON.
-
-        Args:
-            scene_name: Name of the generated scene files.
-            area_size: Width and height of the generation area (meters).
-            num_trees: Number of trees to place.
-            wind_vector: Kept for API compatibility (wind applied in LiDAR sim).
-            species: If set, only sample assets of this species (mono tiles).
-            min_spacing: Minimum XY distance between tree stems (meters).
-            max_spacing: Maximum XY distance to nearest existing stem (cluster mode).
-            placement_mode: Label written to meta (`random`, `spread`, `cluster`).
 
         Returns:
             Placement/meta dict, or None if no assets were found.

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 
+
 class BaseTreeGenerator(ABC):
     """
     Abstract base class for tree generators in the Synthetic Pipeline.
@@ -16,7 +17,7 @@ class BaseTreeGenerator(ABC):
             seed (int): Random seed for reproducible generation.
             height (float): Target height scale for the tree.
             out_obj (str): Filepath to save the exported .obj model (leaf-on).
-                           The generator should also ideally produce a `{out_obj}_noleaf.obj` file.
+                           The generator should also ideally produce a `{stem}_noleaf.obj` file.
             out_json (str): Filepath to save the exported skeleton data as .json.
             **kwargs: Additional generator-specific arguments (e.g., config paths, executables).
         """

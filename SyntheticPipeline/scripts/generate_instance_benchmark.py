@@ -25,11 +25,13 @@ import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from generators.arbaro_generator import ArbaroGenerator
-from pipeline.asset_manager import AssetManager
-from pipeline.forest_assembler import ForestAssembler
-from pipeline.gt_parser import GTParser
-from pipeline.simulator_open3d import Open3DSimulator
+from synthetic_tls import (
+    ArbaroGenerator,
+    AssetManager,
+    ForestAssembler,
+    GTParser,
+    Open3DSimulator,
+)
 
 
 def _load_config(path: str) -> Dict[str, Any]:

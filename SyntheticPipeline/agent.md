@@ -33,7 +33,7 @@ Key learnings, architectural decisions, and physics logic from developing the sy
 
 ## 5. Ground Truth Pipeline
 
-- **Per-tree GT:** Both generators produce a leafless `_noleaf.obj`. `mesh_to_gt_cylinders.py` fits cylinders to branch geometry and writes per-tree JSON.
+- **Per-tree GT:** Both generators produce a leafless `_noleaf.obj`. `synthetic_tls.generators.cylinders.extract_cylinders` fits cylinders to branch geometry and writes per-tree JSON.
 - **Scene GT:** `ForestAssembler` merges transformed per-tree cylinders into `{scene}_gt.json`. `GTParser` flattens to `{scene}_gt.txt` (10 columns per cylinder, including `branch_id`; legacy files have 9).
 - **GT branch caveat:** `branch_id` is the disconnected mesh-component index, not TreeQSM `BranchOrder`. Do not partition trunk/canopy by `branch_id`; use radius or evaluate the whole skeleton.
 - **Trunk mesh:** `{scene}_gt_mesh.ply` (leafless geometry only) is copied as `{species}_tile_{id}_trunk.ply` for labeling.
@@ -86,7 +86,8 @@ Key learnings, architectural decisions, and physics logic from developing the sy
 
 ### Blender
 
-- Runs headless: `blender -b [blend_file] -P blender_script.py -- --seed ... --height ...`
+- Runs headless: `blender -b [blend_file] -P synthetic_tls/generators/blender_runtime/entrypoint.py -- --seed ... --height ...`
+- Dispatches to Mangrove GN when a `Mangrove tree` object is present; otherwise uses the native L-system in `blender_runtime/lsystem.py`
 - Mangrove parameters controlled via `configs/mangrove_config.json` (copy from `.example.json`)
 - `inspect_gn.py` at repo root of SyntheticPipeline lists Geometry Nodes socket identifiers when debugging parameter names
 
@@ -114,7 +115,13 @@ Key learnings, architectural decisions, and physics logic from developing the sy
 
 ```
 SyntheticPipeline/
-├── run_simulation.py          # Demo: config-driven full pipeline
+├── run_simulation.py          # Thin CLI → synthetic_tls.orchestrate.run_tile
+├── synthetic_tls/             # Importable TLS tile package
+│   ├── orchestrate.py / factory.py / constants.py
+│   ├── assemble/              # AssetManager, ForestAssembler
+│   ├── simulate/              # Open3DSimulator
+│   ├── gt/                    # GTParser
+│   └── generators/            # Blender/Arbaro hosts + blender_runtime + cylinders
 ├── scripts/
 │   ├── generate_test_dataset.py
 │   ├── label_gt_points.py
@@ -122,8 +129,6 @@ SyntheticPipeline/
 │   ├── benchmark_qsm.py
 │   ├── plot_benchmark_qsm.py
 │   └── plot_species_performance.py
-├── pipeline/                  # asset_manager, forest_assembler, simulator, gt_parser
-├── generators/                # blender, arbaro, mesh_to_gt_cylinders
 ├── evaluation/                # QSM evaluator, visualizers, GN inspectors
 ├── configs/                   # *.example.json / *.example.xml templates
 ├── lib/arbaro/                # JAR + trees/*.xml (gitignored, local setup)

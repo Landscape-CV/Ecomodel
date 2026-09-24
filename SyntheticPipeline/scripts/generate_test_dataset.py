@@ -9,11 +9,13 @@ from pathlib import Path
 # Add the root of SyntheticPipeline to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline.asset_manager import AssetManager
-from pipeline.forest_assembler import ForestAssembler
-from pipeline.simulator_open3d import Open3DSimulator
-from pipeline.gt_parser import GTParser
-from generators.arbaro_generator import ArbaroGenerator
+from synthetic_tls import (
+    ArbaroGenerator,
+    AssetManager,
+    ForestAssembler,
+    GTParser,
+    Open3DSimulator,
+)
 
 def main():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
