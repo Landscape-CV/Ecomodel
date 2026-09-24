@@ -1,0 +1,31 @@
+{
+    "simulation": {
+        "scene_name": "demo_short",
+        "num_trees": 1,
+        "area_size": 8.0,
+        "wind_x": 0.0,
+        "wind_y": 0.0,
+        "num_scans": 1
+    },
+    "generator": {
+        "type": "arbaro",
+        "arbaro_jar_path": "lib/arbaro/arbaro_cmd.jar",
+        "xml_template": "lib/arbaro/trees/quaking_aspen.xml",
+        "java_path": "java",
+        "workers": 1
+    },
+    "noise": {
+        "resolution_theta_deg": 0.5,
+        "resolution_phi_deg": 0.5,
+        "distance_noise_std": 0.005,
+        "wind_sway_std": 0.0,
+        "beam_divergence_noise_std": 0.0,
+        "voxel_downsample_size": 0.05
+    },
+    "output_dirs": {
+        "base": "output/demo_short",
+        "assets": "output/demo_short/assets",
+        "scenes": "output/demo_short/scenes",
+        "pointclouds": "output/demo_short/pointclouds"
+    }
+}

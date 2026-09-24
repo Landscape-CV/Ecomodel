@@ -40,10 +40,9 @@ benchmark_instance_segmentation.py  →  Hungarian F1 / PQ by density stratum
 
 | Path | Purpose |
 |------|---------|
-| `run_simulation.py` | End-to-end demo orchestrator (assets → scene → scan → GT) |
+| `run_simulation.py` | Thin CLI → `synthetic_tls.orchestrate.run_tile` |
+| `synthetic_tls/` | Importable TLS tile package (generators, assemble, simulate, GT) |
 | `configs/` | Example configs; copy `.example` files to machine-local JSON/XML |
-| `pipeline/` | Core engines |
-| `generators/` | Blender and Arbaro tree generators + `mesh_to_gt_cylinders.py` |
 | `scripts/` | Dataset generation, labeling, benchmarking, and plotting |
 | `evaluation/` | Visualization, QSM evaluation, and Blender GN inspection utilities |
 | `tests/` | `pytest` suite for assembler and generator interfaces |
@@ -52,13 +51,15 @@ benchmark_instance_segmentation.py  →  Hungarian F1 / PQ by density stratum
 | `testdataset/` | Generated benchmark tiles (gitignored) |
 | `inspect_gn.py` | Small Blender helper to list Geometry Nodes inputs on the Mangrove tree |
 
-### `pipeline/`
+### `synthetic_tls/`
 
-- `asset_manager.py` — Parallel tree generation via any `BaseTreeGenerator`
-- `forest_assembler.py` — Scene mesh (`.ply`) + global GT JSON + trunk mesh (`.ply`) + `{scene}_face_tree_ids.npy`
-- `simulator_open3d.py` — TLS raycaster; exports `.laz` with 16-bit intensity (optional per-hit `*_instances.npy`)
-- `simulator_base.py` — Shared simulator interface
-- `gt_parser.py` — Converts scene GT JSON to cylinder `.txt` for evaluation
+- `orchestrate.run_tile` / `factory.create_generator` — shared end-to-end API
+- `assemble/` — `AssetManager`, `ForestAssembler` (scene `.ply` + GT JSON + `{scene}_face_tree_ids.npy`)
+- `simulate/` — `Open3DSimulator` TLS raycaster (`.laz` + optional `*_instances.npy`)
+- `gt/` — `GTParser` (scene GT JSON → cylinder `.txt`)
+- `generators/` — host `BlenderGenerator` / `ArbaroGenerator`, `cylinders.extract_cylinders`
+- `generators/blender_runtime/` — Blender `-P` entrypoint (Mangrove GN + native L-system)
+- `constants.py` — `GROUND_INSTANCE_ID` (−1), `CLUTTER_INSTANCE_ID` (−2)
 
 ### `scripts/`
 

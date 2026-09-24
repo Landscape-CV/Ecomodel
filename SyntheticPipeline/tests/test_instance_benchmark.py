@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from pipeline.forest_assembler import ForestAssembler, GROUND_INSTANCE_ID
+from synthetic_tls.assemble.forest_assembler import ForestAssembler
+from synthetic_tls.constants import GROUND_INSTANCE_ID
 from evaluation.instance_metrics import match_instances, pairwise_iou_matrix
 
 

@@ -1,6 +1,6 @@
 import pytest
 import os
-from pipeline.forest_assembler import ForestAssembler
+from synthetic_tls.assemble.forest_assembler import ForestAssembler
 
 def test_forest_assembler_initialization(tmp_path):
     asset_dir = tmp_path / "assets"
