@@ -217,6 +217,9 @@ export function initSegment(methods, run) {
   const sel = $("seg-method");
   sel.replaceChildren(...methods.map((m) => el("option", { value: m, text: m })));
   if (methods.includes("treelearn")) sel.value = "treelearn";
+  const syncOptions = () => $("seg-treex").closest("label").classList.toggle("hidden", sel.value !== "treex");
+  sel.addEventListener("change", syncOptions);
+  syncOptions();
   $("btn-seg-run").addEventListener("click", () =>
     run(sel.value, $("seg-leaf").checked, $("seg-treex").checked));
 }
