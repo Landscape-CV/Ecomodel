@@ -96,3 +96,4 @@ SyntheticPipeline/testdataset/lewos_labelled/**
 SyntheticPipeline/testdataset/heidelberg_woodleaf/**
 !SyntheticPipeline/testdataset/heidelberg_woodleaf/
 !SyntheticPipeline/testdataset/heidelberg_woodleaf/.gitkeep
+.cursor/plans/instance_seg_brainstorm_9d8cd7df.plan.md
