@@ -1,79 +1,94 @@
-# TLS Instance Annotator (Browser)
+# TLS Instance Annotator (Web)
 
-Inspect and correct tree **instance** labels on terrestrial / MLS point clouds.
+Inspect and correct tree **instance** labels on terrestrial / MLS point clouds, then export corrected ground truth in the Ecomodel tile layout.
 
-Real-TLS benchmarks showed only TreeLearn produces meaningful instances among the five methods; this tool lets you run any of them, review the result in 3D, fix obvious errors, and export corrected ground truth in the Ecomodel tile layout.
+It is a local web app: a FastAPI backend holds the full-resolution cloud and labels, and a three.js frontend in the browser renders a voxel level-of-detail (up to ~2M points by default) on the GPU. Edits are sent as selected display points and expanded exactly to full resolution on the server, so nothing is lost to downsampling.
 
 ## Install
 
-Core deps are already in the Ecomodel / PyTLidar env (`numpy`, `laspy`, `plotly`, segmenters). Add Streamlit for the UI:
+Core deps are already in the Ecomodel / PyTLidar env (`numpy`, `scipy`, `laspy`, segmenters). Add the web server:
 
 ```powershell
 $py = "D:\Projects\PyTLidar\.venv\Scripts\python.exe"
-& $py -m pip install streamlit
+& $py -m pip install fastapi "uvicorn[standard]" python-multipart
 ```
 
-## Quick start (UI)
+No Node.js or build step: three.js is vendored under `web/vendor/`.
 
-Run these **one line at a time** in PowerShell (do not paste the whole block as a single line):
+## Start
 
 ```powershell
 cd D:\Projects\Ecomodel\SyntheticPipeline
-D:\Projects\PyTLidar\.venv\Scripts\python.exe -m streamlit run instance_annotator/app.py
+D:\Projects\PyTLidar\.venv\Scripts\python.exe -m instance_annotator
 ```
 
-Or from any directory:
+The browser opens at `http://127.0.0.1:8765`. Useful flags:
 
-```powershell
-D:\Projects\PyTLidar\.venv\Scripts\python.exe -m streamlit run D:\Projects\Ecomodel\SyntheticPipeline\instance_annotator\app.py
-```
+| Flag | Meaning |
+|------|---------|
+| `--load testdataset/real_instance/l1w_t00_03` | Open a tile prefix (or LAZ/LAS/PLY) on start |
+| `--blank` | Ignore `*_instances.npy` and start with all points non-tree |
+| `--max_display 3000000` | Display LOD cap (edits stay full-res) |
+| `--port 8766` / `--no_browser` | Server options |
 
-Browser opens locally (default `http://localhost:8501`).
+## Workflow
 
-### Workflow
-
-1. **Load**
-   - Paste a **tile prefix** such as `testdataset/real_instance/l1w_t00_03` (loads `*_scan.laz` and optional `*_instances.npy`), **or** a raw `.laz` / `.ply`, **or** upload a file.
-   - Start mode:
-     - **Run segmentation** — blank labels, then run a method.
-     - **Manual tagging only** — start all `-1`, paint trees yourself.
-     - **Load existing GT** — edit an existing `*_instances.npy`.
-2. **Wood / Leaf (reference, optional)** — separate wood vs leaves as a visual aid (does **not** change instance labels):
-   - Default method: **Stem-grow** (LeWoS holdout macro-F1≈0.81). Also: Eigenfeatures, Intensity percentile / threshold / Otsu, RGI, GBSeparation.
-   - **Run wood/leaf**, then toggle **Show wood** / **Show leaves**, and **Color by** Instance IDs or Wood / Leaf (brown = wood, green = leaf, gray = unknown).
-   - On large plots prefer **Stem-grow** / **Eigenfeatures**; RGI is often blotchy after downsampling. Intensity methods need real reflectance (N/A on LeWoS).
-3. **Segment** (optional) — choose `scanline` / `treelearn` / `treex` / `tls2trees` / `pointsam`, optional leaf-removal preprocess, then **Run method**. TreeX uses **stock TLS** by default (good for real plots).
-4. **Examine** — Plotly 3D view (downsampled for speed). Instance list on the right; click an ID to highlight / select that tree.
-5. **Edit**
-   - **Brush select:** click points in the plot (Streamlit ≥1.35) or enter a **seed point index** from the hover tooltip and **Add brush from seed**.
-   - **Reassign** selection → another ID (or `-1`).
-   - **Merge** source tree → target.
-   - **Paint new / split** — selection becomes a new tree ID.
-   - **Mark non-tree** — selection → `-1`.
-   - **Undo / Redo** / compact IDs.
-6. **Export** — writes:
-   - `{name}_scan.laz`
-   - `{name}_instances.npy` (`int32`, trees `>=0`, non-tree `-1`)
-   - `{name}_meta.json`
-   - `{name}_preview.ply` (colored)
+1. **Open** (`O`): type a tile prefix or path, or browse folders (tiles show a *labels* badge when `*_instances.npy` exists). Choose **Use existing labels** or **Start blank**. Recent paths are remembered. Upload also works for small files.
+2. **Review trees** in the **Trees** tab: sort by ID / points / height / unreviewed, filter by ID, step with `[` and `]` (camera frames each tree), press `K` to mark reviewed. The progress bar tracks review coverage; reviewed IDs are written to `*_meta.json`.
+3. **Select**
+   - Navigate mode (`V`): click a point to select its whole tree; Shift adds, Ctrl subtracts. Double-click isolates and frames a tree.
+   - **Lasso** (`L`), **Box** (`B`), **Sphere brush** (`R`, radius in the top bar, `-` / `=` to resize). In tool modes, right-drag orbits and middle-drag pans.
+   - Modifiers: Shift = add, Ctrl = subtract, **Alt = only the focused tree** (or the tree under the cursor).
+   - **Grow** (`G`): connected region growing from the selection within the brush radius, same label only.
+   - **Height slab** in the View panel hides everything outside a Z range, which makes stems easy to lasso under dense canopy. Hide non-tree (`H`) and Isolate (`I`) help too.
+4. **Edit** (always available for the current selection):
+   - **New tree** (`N`), **Assign** (`A`, to any ID or -1), **Merge** (`M`, merges whole trees touched by the selection into a target), **Non-tree** (`Del`).
+   - **Undo / Redo** (`Ctrl+Z` / `Ctrl+Y`) are diff-based, so they are cheap even on 20M-point clouds.
+5. **Save** (`Ctrl+S` or the **Export** tab). The tile name follows the loaded cloud; existing files trigger an overwrite prompt. Writes:
+   - `{name}_scan.laz`, `{name}_instances.npy` (`int32`, trees `>=0`, non-tree `-1`), `{name}_meta.json`, `{name}_preview.ply`
 
 That triplet is loadable by `scripts/benchmark_instance_segmentation.py`.
 
-## Wood / leaf methods
+**Safety:** a dot next to the file name marks unsaved changes; the tab warns before closing, and opening another cloud or running segmentation asks first. Labels are **autosaved** every 10 edits to `output/annotator_workdir/<name>.autosave.npy`; on the next open you are offered to restore it. Merging into non-tree always asks for confirmation.
 
-Defaults (Stem-grow `verticality_min=0.8`, `height_percentile=15`, `grow_radius=0.2`) were selected by a parameter sweep on the open [LeWoS LabelledPC](https://zenodo.org/records/4946676) wood/leaf GT (61 tropical TLS trees). Full logs and plots: `SyntheticPipeline/output/wood_leaf_benchmark/` (`trials.csv`, `summary.json`, comparison PNGs). Intensity methods are N/A on LeWoS (no intensity channel); they were evaluated on Heidelberg TLS LAZ when available.
+## Keyboard shortcuts
+
+Press `?` in the app for the full list.
+
+| Key | Action |
+|-----|--------|
+| `V` / `L` / `B` / `R` | Navigate / Lasso / Box / Brush |
+| `N` / `A` / `M` / `Del` | New tree / Assign / Merge / Non-tree |
+| `G` / `T` / `Esc` | Grow / select focused tree / clear selection |
+| `[` / `]` / `K` | Previous / next tree / toggle reviewed |
+| `I` / `H` / `C` / `F` | Isolate / hide non-tree / toggle wood-leaf colors / frame |
+| `Ctrl+Z` / `Ctrl+Y` / `Ctrl+S` | Undo / redo / save |
+
+## Wood / leaf reference (Wood / Leaf tab)
+
+Runs in the background and colors points brown (wood) / green (leaf); toggle each class in the View panel. It does not change instance labels.
+
+Defaults (Stem-grow `verticality_min=0.8`, `height_percentile=15`, `grow_radius=0.2`) were selected by a parameter sweep on the open [LeWoS LabelledPC](https://zenodo.org/records/4946676) wood/leaf GT (61 tropical TLS trees). Full logs and plots: `SyntheticPipeline/output/wood_leaf_benchmark/` (`trials.csv`, `summary.json`, comparison PNGs). Intensity methods are N/A on LeWoS (no intensity channel); they were evaluated on Heidelberg TLS LAZ.
 
 | Method | Notes |
 |--------|--------|
-| Stem-grow ★ | Seed low-Z vertical points, grow by radius. **Best LeWoS holdout macro-F1≈0.81**. |
-| Eigenfeatures | Wood = high linearity + verticality + low curvature (kNN PCA). Close second (~0.80). |
-| Intensity percentile | Wood = intensity ≥ P-th percentile (default P=40). Needs real intensity. |
-| Intensity threshold | Wood = intensity ≥ absolute T (default = cloud median). |
-| Otsu | Auto intensity threshold from histogram. Fast on full cloud. |
-| RGI | Region-growing; voxel+intensity subsample then NN-paint. Weak on LeWoS GT (~0.24). |
-| GBSeparation | Graph + root-path wood. Subsample on large tiles; skip if OOM. |
+| Stem-grow | Seed low-Z vertical points, grow by radius. **Best LeWoS holdout macro-F1 about 0.81**. |
+| Eigenfeatures | Wood = high linearity + verticality + low curvature (kNN PCA). Close second (about 0.80). |
+| Intensity percentile / threshold / Otsu | Need real intensity. |
+| RGI | Region growing on a subsample. Weak on LeWoS GT (about 0.24). |
+| GBSeparation | Graph + root-path wood. Subsamples large tiles. |
 
-Reference overlay only. Segment’s **Leaf removal (RGI)** checkbox still strips leaves before an instance method run.
+## Segmentation (Segment tab)
+
+Runs a benchmark instance method in the background and replaces all labels (undoable).
+
+| Method | Notes |
+|--------|--------|
+| `treelearn` | Needs TreeLearn weights + CUDA for speed. Config: `TreeLearn/configs/pipeline/ecomodel.yaml`. |
+| `pointsam` | Needs `thirdparty/checkpoints/point_sam/model.safetensors`. Auto prompts only. |
+| `treex` | Stock `TreeXPresetTLS` when "TreeX stock TLS settings" is checked. |
+| `tls2trees` | In-process port; RGI semantic unless leaf removal already ran. |
+| `scanline` | Classic Ecomodel stem graph; often finds few stems on 0.1 m voxels. |
 
 ## Label convention
 
@@ -82,56 +97,36 @@ Reference overlay only. Segment’s **Leaf removal (RGI)** checkbox still strips
 | `-1` | Non-tree / ground / unlabeled |
 | `>=0` | Tree instance ID |
 
-## Method notes
-
-| Method | Notes |
-|--------|--------|
-| `treelearn` | Needs TreeLearn weights + CUDA for speed. Config: `TreeLearn/configs/pipeline/ecomodel.yaml`. |
-| `pointsam` | Needs `thirdparty/checkpoints/point_sam/model.safetensors`. Auto prompts only in the UI. |
-| `treex` | Stock `TreeXPresetTLS` when “TreeX stock TLS” is checked. |
-| `tls2trees` | In-process port; RGI semantic unless leaf-removal already ran. |
-| `scanline` | Classic Ecomodel stem graph; often finds few stems on 0.1 m voxels. |
-
 ## Headless demos
 
 ```powershell
 $py = "D:\Projects\PyTLidar\.venv\Scripts\python.exe"
 cd D:\Projects\Ecomodel\SyntheticPipeline
 & $py -m instance_annotator.cli_demo --tile testdataset/real_instance/l1w_t00_03
-```
-
-Artifacts land in `output/annotator_demos/`:
-
-| Demo | Output |
-|------|--------|
-| 1 TreeLearn | `demo_treelearn_*` + HTML |
-| 2 Manual paint | `demo_manual_*` + HTML |
-| 3 Correct | merge + nontree on TreeLearn → `demo_corrected_*` + HTML |
-
-Skip GPU TreeLearn:
-
-```powershell
 & $py -m instance_annotator.cli_demo --skip_treelearn --only manual
 ```
+
+Artifacts land in `output/annotator_demos/` (tile triplets plus colored `_preview.ply`).
 
 ## Package layout
 
 ```
 instance_annotator/
-  app.py          # Streamlit UI
-  cli_demo.py     # Scripted demos
+  __main__.py     # python -m instance_annotator -> web server
+  server/         # FastAPI app (main.py), API routes, session state + jobs
+  web/            # index.html, style.css, js/ (viewer, tools, panels), vendor/three.js
+  lod.py          # Voxel display LOD with exact full-res mapping
+  labels.py       # Diff-based undoable label editor
   io.py           # LAZ/PLY + tile I/O
-  labels.py       # Undoable editor
   segment.py      # Benchmark method wrapper
-  viz.py          # Plotly + PLY colors
-  README.md       # This guide
+  wood_leaf.py    # Wood/leaf classifiers
+  viz.py          # Colors, colored PLY, radius pick
+  cli_demo.py     # Scripted demos
+  test_core.py    # Core + API tests (pytest)
 ```
 
 ## Tips
 
-- **Restart Streamlit** after pulling these fixes (`Ctrl+C`, then run again) so the browser gets the new app code.
-- **Large files:** use a disk **path / tile prefix**, not the upload widget. Upload limit is 8 GB via [`.streamlit/config.toml`](../.streamlit/config.toml).
-- Display default is **150k** points (sidebar can raise to 2M). Edits always hit the full cloud.
-- **Brush select:** choose that tool, click in the plot (or seed index). Magenta = selection. Use **Add to selection** off to replace.
-- If the plot feels stuck after Clear, click a different point once (Plotly may keep the old click until you pick again).
-- Relative paths resolve under `SyntheticPipeline/` even if you started Streamlit elsewhere.
+- **Large clouds:** open by disk path, not upload. A 20M-point cloud takes a few seconds to build the LOD; lower **Max display points** in the Open dialog if the browser is slow.
+- Relative paths resolve under `SyntheticPipeline/`.
+- Only one browser tab should edit at a time (the server holds a single session).

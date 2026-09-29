@@ -22,12 +22,7 @@ for p in (str(_ROOT), str(_SP_DIR)):
 from instance_annotator.io import load_tile_prefix, save_tile
 from instance_annotator.labels import LabelEditor
 from instance_annotator.segment import run_method
-from instance_annotator.viz import (
-    build_plotly_figure,
-    downsample_indices,
-    save_plotly_html,
-    selection_from_click,
-)
+from instance_annotator.viz import selection_from_click
 
 
 def _demo_dir() -> Path:
@@ -58,15 +53,7 @@ def demo_treelearn(tile_prefix: Path, out: Path) -> None:
         lab,
         meta=meta,
     )
-    fig, _ = build_plotly_figure(
-        tile["xyz"],
-        lab,
-        downsample_indices(len(tile["xyz"]), 120_000),
-        title="Demo 1 TreeLearn",
-    )
-    html = save_plotly_html(fig, out / "demo_treelearn.html")
     print("  wrote", paths)
-    print("  html", html)
     # stash labels for demo 3
     np.save(out / "demo_treelearn_work_labels.npy", lab)
     np.save(out / "demo_treelearn_xyz.npy", tile["xyz"])
@@ -100,16 +87,8 @@ def demo_manual(tile_prefix: Path, out: Path) -> None:
         ed.labels,
         meta=meta,
     )
-    fig, _ = build_plotly_figure(
-        xyz,
-        ed.labels,
-        downsample_indices(len(xyz), 120_000),
-        title="Demo 2 Manual paint",
-    )
-    html = save_plotly_html(fig, out / "demo_manual.html")
     print(f"  trees={ed.num_trees} pts_t0={(ed.labels==0).sum()} pts_t1={(ed.labels==1).sum()}")
     print("  wrote", paths)
-    print("  html", html)
 
 
 def demo_correct(out: Path) -> None:
@@ -126,11 +105,11 @@ def demo_correct(out: Path) -> None:
     ids = ed.tree_ids()
     if len(ids) >= 2:
         # Merge two largest instances
-        counts = [(int(i), int((ed.labels == i).sum())) for i in ids]
-        counts.sort(key=lambda t: -t[1])
+        cnt = ed.counts()
+        counts = sorted(((int(i), cnt[int(i)]) for i in ids), key=lambda t: -t[1])
         a, b = counts[0][0], counts[1][0]
         n = ed.merge(b, a)
-        print(f"  merged tree {b} → {a} ({n} pts)")
+        print(f"  merged tree {b} -> {a} ({n} pts)")
     # Mark a small ball near centroid as non-tree
     c = xyz.mean(axis=0)
     i0 = int(np.argmin(np.sum((xyz - c) ** 2, axis=1)))
@@ -149,15 +128,7 @@ def demo_correct(out: Path) -> None:
         ed.labels,
         meta=meta,
     )
-    fig, _ = build_plotly_figure(
-        xyz,
-        ed.labels,
-        downsample_indices(len(xyz), 120_000),
-        title="Demo 3 Corrected GT",
-    )
-    html = save_plotly_html(fig, out / "demo_corrected.html")
     print("  wrote", paths)
-    print("  html", html)
 
 
 def main() -> None:
@@ -189,7 +160,7 @@ def main() -> None:
         demo_manual(tile, out)
     if which in ("all", "correct"):
         demo_correct(out)
-    print("\nDemos complete →", out)
+    print("\nDemos complete ->", out)
 
 
 if __name__ == "__main__":

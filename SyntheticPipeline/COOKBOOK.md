@@ -223,11 +223,22 @@ python scripts/plot_method_comparison_val16.py
 python scripts/prepare_real_instance_tiles.py --help
 ```
 
-### Instance annotator demos
+### Instance annotator (web UI)
 
 ```bash
-python -m instance_annotator --tile <prefix>
-python -m instance_annotator --only manual --skip_treelearn
+pip install fastapi "uvicorn[standard]" python-multipart   # once
+python -m instance_annotator                                  # opens http://127.0.0.1:8765
+python -m instance_annotator --load testdataset/real_instance/l1w_t00_03
+python -m instance_annotator --load <cloud.laz> --blank --max_display 3000000
+```
+
+Select with click-tree / Lasso (L) / Box (B) / Brush (R); edit with New tree (N), Assign (A), Merge (M), Non-tree (Del); Ctrl+Z / Ctrl+S; press `?` for all shortcuts. Autosave goes to `output/annotator_workdir/`. See [`instance_annotator/README.md`](instance_annotator/README.md).
+
+### Instance annotator demos (headless)
+
+```bash
+python -m instance_annotator.cli_demo --tile <prefix>
+python -m instance_annotator.cli_demo --only manual --skip_treelearn
 # --only: all | treelearn | manual | correct
 ```
 
