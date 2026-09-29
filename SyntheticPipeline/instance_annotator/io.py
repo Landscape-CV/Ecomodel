@@ -17,7 +17,7 @@ _SP_DIR = Path(__file__).resolve().parents[1]
 
 
 def _as_path(p: PathLike) -> Path:
-    """Resolve path; try SyntheticPipeline-relative for Streamlit cwd safety."""
+    """Resolve path; relative paths try SyntheticPipeline/ first, then cwd."""
     path = Path(p).expanduser()
     if path.is_absolute():
         return path.resolve()
