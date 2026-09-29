@@ -275,6 +275,21 @@ def test_api_woodleaf_job(tmp_path):
     assert set(np.unique(mat).tolist()) <= {1, 2}
 
 
+def test_propagate_voxel_labels():
+    from instance_annotator.segment import propagate_labels
+
+    rng = np.random.default_rng(0)
+    a = rng.random((2000, 3)) * 0.5
+    b = rng.random((2000, 3)) * 0.5 + [3.0, 0, 0]
+    far = np.array([[10.0, 10.0, 10.0]])
+    xyz = np.vstack([a, b, far])
+    seeds = np.array([0, 5, 2000, 2005])
+    full = propagate_labels(xyz, seeds, np.array([1, 1, 2, -1], np.int32), radius=0.6)
+    assert np.all(full[:2000] == 1)
+    assert set(np.unique(full[2000:4000]).tolist()) <= {2, -1} and (full[2000:4000] == 2).any()
+    assert full[-1] == -1
+
+
 def _wait_job(client, job_id):
     import time
 
