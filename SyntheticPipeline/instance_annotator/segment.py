@@ -43,6 +43,30 @@ def default_ckpt_kwargs(
     }
 
 
+SPARSE_COVERAGE = 0.5
+DEFAULT_PROPAGATE_RADIUS = 0.2
+
+
+def propagate_labels(
+    xyz: np.ndarray, seed_idx: np.ndarray, seed_labels: np.ndarray, *, radius: float = DEFAULT_PROPAGATE_RADIUS
+) -> np.ndarray:
+    """Give every point the label of its nearest seed point within `radius` (else -1).
+
+    Seeds with label -1 also count, so ground/non-tree voxels keep nearby points non-tree.
+    """
+    from scipy.spatial import cKDTree
+
+    full = np.full(len(xyz), -1, dtype=np.int32)
+    if len(seed_idx) == 0:
+        return full
+    tree = cKDTree(xyz[seed_idx])
+    dist, nn = tree.query(xyz, k=1, distance_upper_bound=radius, workers=-1)
+    hit = np.isfinite(dist)
+    full[hit] = seed_labels[nn[hit]]
+    full[seed_idx] = seed_labels
+    return full
+
+
 def run_method(
     xyz: np.ndarray,
     intensity01: np.ndarray,
@@ -53,6 +77,7 @@ def run_method(
     treelearn_config: Optional[str] = None,
     pointsam_ckpt: Optional[str] = None,
     results_folder: Optional[str] = None,
+    propagate_radius: float = DEFAULT_PROPAGATE_RADIUS,
 ) -> Tuple[np.ndarray, Dict]:
     """
     Run one instance method; return full-length labels (N,) and info dict.
@@ -113,9 +138,16 @@ def run_method(
 
     # Guard invalid indices
     valid = (oi >= 0) & (oi < len(full))
-    full[oi[valid]] = lab[valid]
+    oi, lab = oi[valid], lab[valid]
+    full[oi] = lab
     info["ok"] = True
-    info["num_pred_points"] = int(valid.sum())
+    info["num_pred_points"] = int(len(oi))
+    if len(np.unique(oi)) < SPARSE_COVERAGE * len(full):
+        # Voxelized output (e.g. TreeLearn at 0.1 m) labels one point per voxel;
+        # spread each label to the full-resolution points around it.
+        full = propagate_labels(xyz, oi, lab, radius=propagate_radius)
+        info["propagated"] = True
+        info["num_pred_points"] = int((full >= 0).sum())
     info["num_trees"] = int(len(np.unique(full[full >= 0])))
     info["message"] = f"trees={info['num_trees']} labeled_pts={info['num_pred_points']}"
     return full, info
