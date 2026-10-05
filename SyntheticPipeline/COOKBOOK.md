@@ -234,6 +234,18 @@ python -m instance_annotator --load <cloud.laz> --blank --max_display 3000000
 
 Select with click-tree / Lasso (L) / Box (B) / Brush (R); edit with New tree (N), Assign (A), Merge (M), Non-tree (Del); Ctrl+Z / Ctrl+S; press `?` for all shortcuts. Autosave goes to `output/annotator_workdir/`. See [`instance_annotator/README.md`](instance_annotator/README.md).
 
+### Whole-island annotator project (many tiles)
+
+```bash
+python -m instance_annotator.project build D:/pointclouds/processed2025scans --out D:/pointclouds/island_project
+python -m instance_annotator --project D:/pointclouds/island_project        # stream all tiles in the browser
+python -m instance_annotator.project segment D:/pointclouds/island_project --method treelearn --reuse_cache
+python -m instance_annotator.project stitch  D:/pointclouds/island_project            # review in UI, or --apply 0.5
+python -m instance_annotator.project export  D:/pointclouds/island_project --out output/island_export --all-trees
+```
+
+Edits in the UI's full-resolution **edit regions** write straight into the project. Exported tiles keep island-wide tree IDs. See the "Whole-island projects" section of the annotator README.
+
 ### Instance annotator demos (headless)
 
 ```bash

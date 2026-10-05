@@ -90,6 +90,67 @@ Runs a benchmark instance method in the background and replaces all labels (undo
 | `tls2trees` | In-process port; RGI semantic unless leaf removal already ran. |
 | `scanline` | Classic Ecomodel stem graph; often finds few stems on 0.1 m voxels. |
 
+## Whole-island projects (streaming)
+
+For scans that are too big to load in one go (for example the 18-tile, 975M-point island in `D:\pointclouds\processed2025scans`), build an **island project** once. The browser then streams an octree of all tiles, Potree-style, and you load full-resolution **edit regions** only where you need to work.
+
+### Build and open
+
+```powershell
+$py = "D:\Projects\PyTLidar\.venv\Scripts\python.exe"
+cd D:\Projects\Ecomodel\SyntheticPipeline
+& $py -m instance_annotator.project build D:\pointclouds\processed2025scans --out D:\pointclouds\island_project
+& $py -m instance_annotator --project D:\pointclouds\island_project
+```
+
+You can also open a project from the **Open** dialog: project folders show an *island project* badge. The build merges all tiles into one project-local frame, using the absolute coordinates in the LAZ headers; the CRS is kept. Every point is stored exactly once, even where tiles overlap. A rebuild only redoes tiles whose source changed (`--force` redoes all of them).
+
+### Island tab
+
+- **Streaming:** the point budget slider defaults to 8M and goes up to 20M. **Adaptive point size** fills gaps at coarse levels. The stream stats line shows how many points and nodes are visible.
+- **Minimap:** shows the tiles, tree bases, the open region and the camera footprint. Click it to move the camera.
+- **Colors:** Instance IDs shade non-tree points by height. **Height** colors every point by elevation.
+- **Picking:** click a point to focus its tree, which also flies the camera there. Double-click isolates the tree. The Trees tab lists island-wide trees.
+- **Focused tree (whole island):** **Merge into…** and **Non-tree** act on every tile the tree touches without loading it. Both are undoable with `Ctrl+Z` / `Ctrl+Y`.
+- **Edit region:** use **Draw box** (drag on the ground) or **Around focused tree** (with a margin in metres), then **Open region**. That box loads at full resolution into the normal editor, so Lasso, Box, Brush, New tree, Grow and so on all work. The rest of the island stays visible but dimmed. Every edit is **written straight into the project**, and new trees get island-unique IDs. There is no separate save step. **Close region** returns to streaming.
+- **Segment whole island:** runs a benchmark method over **buffered tiles**: each tile plus a 10 m buffer.
+  - Each tree belongs to the tile that contains its stem base.
+  - Duplicates found in overlapping buffers are merged by voxel IoU.
+  - Borderline pairs are queued for review.
+  - Per-tile results are cached in `seg_cache/`, and labels are backed up to `labels_backup/` before they are overwritten.
+  - Each tile is thinned to one seed point per voxel before segmenting. The default voxel is 5 cm, but **TreeX** uses 3 cm with up to 40M seeds per tile, because its stock TLS stem search finds nothing at 5 cm. If a tile's seeds end up coarser than 4 cm, TreeX switches to its relaxed parameters for sparse clouds.
+  - If no tile yields a tree, the job fails and existing labels are left untouched.
+- **Border merges:** **Find candidates** scores trees that touch across tile edges. Each candidate has **Fly** (look at the pair), **Merge** and **Reject** buttons. Decisions persist in `stitch_candidates.json`.
+- **Export** tab (island mode) has three outputs:
+  - Per-tile triplets in the standard layout (`<tile>_scan.laz` is a lossless copy of the source, plus `_instances.npy` with **island-wide IDs** and `_meta.json`). These load in single-file mode and in the benchmarks.
+  - `trees.csv`.
+  - An optional per-tree LAZ for the focused tree or for all trees.
+
+### CLI
+
+| Command | Purpose |
+|---------|---------|
+| `project build <src> --out <proj> [--workers N] [--force]` | Build the octree and label store |
+| `project import <proj> <labels_dir> [--keep_ids]` | Import existing per-tile `*_instances.npy` (IDs are offset per tile unless `--keep_ids`) |
+| `project segment <proj> --method treelearn [--buffer 10] [--tiles a,b] [--reuse_cache]` | Buffered island segmentation |
+| `project stitch <proj> [--apply 0.5]` | Find border candidates, optionally auto-apply those with score ≥ the threshold |
+| `project export <proj> --out <dir> [--tiles a,b] [--trees 3,7 \| --all-trees] [--no_tiles]` | Per-tile triplets, `trees.csv`, per-tree LAZ |
+| `project info <proj>` | Summary |
+
+All commands are `python -m instance_annotator.project …`.
+
+### Measured on the real island (18 LAZ tiles, 974,765,161 points, 8.0 GB source)
+
+| Step | Result |
+|------|--------|
+| Build (one-off) | 707 s. The project is 17.3 GB (octree tiles 13.6 GB, labels 3.6 GB). |
+| Open in the browser | Preview in 0.8 s; the overview settles in about 3 s |
+| Rendering | 7.5M visible points at about 5 ms per frame (about 180 fps) |
+| Open an edit region | 5 to 6 s for 15 to 22M full-resolution points |
+| Pick a tree | About 10 ms |
+
+Whole-island segmentation time is dominated by the chosen method, since it runs once per buffered tile. Use `--tiles` to try one or two tiles first, and `--reuse_cache` to resume.
+
 ## Label convention
 
 | Label | Meaning |
@@ -113,8 +174,9 @@ Artifacts land in `output/annotator_demos/` (tile triplets plus colored `_previe
 ```
 instance_annotator/
   __main__.py     # python -m instance_annotator -> web server
-  server/         # FastAPI app (main.py), API routes, session state + jobs
-  web/            # index.html, style.css, js/ (viewer, tools, panels), vendor/three.js
+  server/         # FastAPI app (main.py), API routes, session + island project session, jobs
+  project/        # Island projects: build (octree), store, segment_island, stitch, stats, export, CLI
+  web/            # index.html, style.css, js/ (viewer, octree, island, tools, panels), vendor/three.js
   lod.py          # Voxel display LOD with exact full-res mapping
   labels.py       # Diff-based undoable label editor
   io.py           # LAZ/PLY + tile I/O
@@ -123,6 +185,7 @@ instance_annotator/
   viz.py          # Colors, colored PLY, radius pick
   cli_demo.py     # Scripted demos
   test_core.py    # Core + API tests (pytest)
+  test_project.py # Island project tests on a synthetic 2x2 tile set (pytest)
 ```
 
 ## Tips

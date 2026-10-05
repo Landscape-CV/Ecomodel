@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -39,6 +39,7 @@ class _Diff:
     idx: np.ndarray  # int64 changed point indices
     old: np.ndarray  # int32 labels before
     new: np.ndarray  # int32 labels after
+    extra: Any = None  # side effects to undo/redo alongside (e.g. project-wide merges)
 
     @property
     def nbytes(self) -> int:
@@ -67,6 +68,8 @@ class LabelEditor:
         self.dirty = False
         self.version = 0
         self.last_changed: np.ndarray = np.zeros(0, dtype=np.int64)
+        # When set, new tree ids come from here (island-wide ids in project regions).
+        self.id_allocator: Optional[Callable[[], int]] = None
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -111,6 +114,14 @@ class LabelEditor:
         self._trim()
         self._touch(changed)
         return int(len(changed))
+
+    @property
+    def last_diff(self) -> Optional[_Diff]:
+        return self._undo[-1] if self._undo else None
+
+    @property
+    def next_redo(self) -> Optional[_Diff]:
+        return self._redo[-1] if self._redo else None
 
     def _commit_mask(self, mask: np.ndarray, target: int) -> int:
         mask = np.asarray(mask, dtype=bool)
@@ -187,7 +198,7 @@ class LabelEditor:
         mask = np.asarray(mask, dtype=bool)
         if not np.any(mask):
             raise ValueError("empty selection")
-        new_id = self.next_tree_id()
+        new_id = self.id_allocator() if self.id_allocator else self.next_tree_id()
         self._commit_mask(mask, new_id)
         return new_id
 

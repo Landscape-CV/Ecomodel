@@ -12,6 +12,7 @@ export function emit(evt, payload) {
 }
 
 export const state = {
+  mode: "single",        // single | island (streaming project) | region (edit box inside a project)
   info: { loaded: false },
   n: 0,                  // display point count
   positions: null,       // Float32Array (n*3), origin-centered

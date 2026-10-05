@@ -246,6 +246,7 @@ export class SelectionTools {
 
 export function selectTree(t, op = "replace") {
   const sel = state.selection, lab = state.labels;
+  if (!sel) return;
   if (op === "replace") sel.fill(0);
   const val = op === "sub" ? 0 : 1;
   for (let i = 0; i < state.n; i++) if (lab[i] === t) sel[i] = val;
