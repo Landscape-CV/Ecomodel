@@ -46,10 +46,29 @@ class Lod:
         return np.unique(self.rep_of_full[np.asarray(full_idx, dtype=np.int64)]).astype(np.int64)
 
 
-def _voxel_keys(xyz: np.ndarray, vs: float) -> np.ndarray:
-    ijk = np.floor((xyz - xyz.min(axis=0)) / vs).astype(np.int64)
-    dims = ijk.max(axis=0) + 1
-    return (ijk[:, 0] * dims[1] + ijk[:, 1]) * dims[2] + ijk[:, 2]
+def _factorize(keys: np.ndarray):
+    """(first index of each distinct key, inverse codes); keys numbered by first appearance."""
+    try:
+        import pandas as pd
+
+        codes, _ = pd.factorize(keys, sort=False)
+        codes = codes.astype(np.int64)
+        first = np.flatnonzero(np.r_[True, np.diff(np.maximum.accumulate(codes)) > 0])
+        return first, codes
+    except ImportError:
+        _, first, inv = np.unique(keys, return_index=True, return_inverse=True)
+        return first, inv.reshape(-1)
+
+
+def _voxel_keys(xyz: np.ndarray, vs: float, lo=None, hi=None) -> np.ndarray:
+    lo = xyz.min(axis=0) if lo is None else lo
+    hi = xyz.max(axis=0) if hi is None else hi
+    dims = (np.floor((hi - lo) / vs) + 1).astype(np.int64)
+    keys = np.floor((xyz[:, 0] - lo[0]) / vs).astype(np.int64) * dims[1]
+    keys += np.floor((xyz[:, 1] - lo[1]) / vs).astype(np.int64)
+    keys *= dims[2]
+    keys += np.floor((xyz[:, 2] - lo[2]) / vs).astype(np.int64)
+    return keys
 
 
 def _occupied(xyz: np.ndarray, vs: float) -> int:
@@ -68,12 +87,14 @@ def build_lod(xyz: np.ndarray, max_points: int = DEFAULT_MAX_DISPLAY, seed: int 
         return Lod(np.arange(n, dtype=np.int64), np.arange(n, dtype=np.int64), 0.0)
 
     rng = np.random.default_rng(seed)
-    n_s = min(n, 4 * max_points)
+    n_s = min(n, max(1_000_000, max_points // 2))
     sample = xyz[rng.choice(n, size=n_s, replace=False)] if n_s < n else xyz
-    target_s = max_points * n_s / n * 1.5 if n_s < n else max_points
+    # A voxel with N/M points appears in an n_s-point sample with p = 1 - exp(-n_s / M).
+    target_s = max_points * -np.expm1(-n_s / max_points) if n_s < n else max_points
+    target_s *= 0.93  # aim slightly low so the full-cloud pass below usually fits first time
 
-    ext = np.ptp(xyz, axis=0)
-    ext = np.maximum(ext, 1e-6)
+    lo_xyz, hi_xyz = xyz.min(axis=0), xyz.max(axis=0)
+    ext = np.maximum(hi_xyz - lo_xyz, 1e-6)
     lo, hi = 1e-4, float(ext.max())
     vs = float((np.prod(ext) / max_points) ** (1.0 / 3.0))
     for _ in range(18):
@@ -87,20 +108,10 @@ def build_lod(xyz: np.ndarray, max_points: int = DEFAULT_MAX_DISPLAY, seed: int 
         vs = float(np.sqrt(lo * hi))
     vs = hi
 
+    # The first point met in each voxel represents it (first == sorted, so display order is file order).
     for _ in range(8):
-        keys = _voxel_keys(xyz, vs)
-        perm = rng.permutation(n)
-        uniq, first, inv = np.unique(keys[perm], return_index=True, return_inverse=True)
-        if len(uniq) <= max_points:
+        first, codes = _factorize(_voxel_keys(xyz, vs, lo_xyz, hi_xyz))
+        if len(first) <= max_points:
             break
-        vs *= (len(uniq) / max_points) ** (1.0 / 2.0) * 1.02
-
-    display_idx = perm[first].astype(np.int64)
-    rep_perm = inv.reshape(-1)
-    order = np.argsort(display_idx)
-    display_idx = display_idx[order]
-    rank = np.empty_like(order)
-    rank[order] = np.arange(len(order))
-    rep_of_full = np.empty(n, dtype=np.int64)
-    rep_of_full[perm] = rank[rep_perm]
-    return Lod(display_idx, rep_of_full, float(vs))
+        vs *= (len(first) / max_points) ** (1.0 / 2.0) * 1.02
+    return Lod(first.astype(np.int64), codes, float(vs))

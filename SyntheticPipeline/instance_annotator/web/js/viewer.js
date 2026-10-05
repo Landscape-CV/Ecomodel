@@ -2,78 +2,10 @@
 import * as THREE from "three";
 import { OrbitControls } from "/vendor/OrbitControls.js";
 import { state, emit, treeColor } from "./state.js";
+import { PAL_W, VERT, FRAG, extraUniforms } from "./pointshader.js";
 
-const PAL_W = 1024;
 // IDs beyond this wrap around the palette (colors repeat).
 const PAL_MAX = PAL_W * 1024;
-
-const VERT = /* glsl */ `
-uniform float uSize;
-uniform float uPixelRatio;
-uniform float uAtten;
-uniform float uScale;
-uniform float uMode;        // 0 instance, 1 material
-uniform float uFocus;
-uniform float uFocusOn;
-uniform float uIsolate;
-uniform float uHideNT;
-uniform float uZmin;
-uniform float uZmax;
-uniform float uShowWood;
-uniform float uShowLeaf;
-uniform sampler2D uPalette;
-uniform vec2 uPalSize;
-attribute float label;
-attribute float selected;
-attribute float material;
-varying vec3 vColor;
-
-vec3 treeColor(float id) {
-  if (id < 0.0) return vec3(0.42, 0.42, 0.45);
-  float id2 = mod(id, uPalSize.x * uPalSize.y);
-  vec2 uv = vec2((mod(id2, uPalSize.x) + 0.5) / uPalSize.x, (floor(id2 / uPalSize.x) + 0.5) / uPalSize.y);
-  return texture2D(uPalette, uv).rgb;
-}
-
-void main() {
-  bool isFocus = uFocusOn > 0.5 && abs(label - uFocus) < 0.5;
-  bool hide = (uHideNT > 0.5 && label < 0.0)
-    || (uIsolate > 0.5 && uFocusOn > 0.5 && !isFocus)
-    || position.z < uZmin || position.z > uZmax
-    || (material > 0.5 && material < 1.5 && uShowWood < 0.5)
-    || (material > 1.5 && uShowLeaf < 0.5);
-  if (hide) {
-    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-    gl_PointSize = 0.0;
-    return;
-  }
-  vec3 col;
-  if (uMode > 0.5) {
-    col = material > 1.5 ? vec3(0.18, 0.55, 0.34) : (material > 0.5 ? vec3(0.55, 0.35, 0.17) : vec3(0.45));
-  } else {
-    col = treeColor(label);
-  }
-  if (uFocusOn > 0.5 && uIsolate < 0.5 && uMode < 0.5 && !isFocus) col = mix(col, vec3(0.12), 0.65);
-  if (selected > 0.5) col = vec3(1.0, 0.25, 0.85);
-  vColor = col;
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  gl_Position = projectionMatrix * mv;
-  float sz = uSize * uPixelRatio;
-  if (uAtten > 0.5) sz = uSize * uScale / max(-mv.z, 0.01);
-  if (selected > 0.5) sz = max(sz, 2.0 * uPixelRatio) * 1.15;
-  gl_PointSize = clamp(sz, 1.0, 64.0);
-}
-`;
-
-const FRAG = /* glsl */ `
-uniform float uOpacity;
-varying vec3 vColor;
-void main() {
-  vec2 d = gl_PointCoord - 0.5;
-  if (dot(d, d) > 0.25) discard;
-  gl_FragColor = vec4(vColor, uOpacity);
-}
-`;
 
 export class Viewer {
   constructor(host) {
@@ -102,11 +34,12 @@ export class Viewer {
       uHideNT: { value: 0 }, uZmin: { value: -1e9 }, uZmax: { value: 1e9 },
       uShowWood: { value: 1 }, uShowLeaf: { value: 1 }, uOpacity: { value: 1 },
       uPalette: { value: null }, uPalSize: { value: new THREE.Vector2(PAL_W, 1) },
+      uHRange: { value: new THREE.Vector2(0, 30) },
     };
     this._palRows = 0;
     this.ensurePalette(0);
     this.material = new THREE.ShaderMaterial({
-      uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG,
+      uniforms: { ...this.uniforms, ...extraUniforms() }, vertexShader: VERT, fragmentShader: FRAG,
       transparent: false, depthWrite: true,
     });
     this.points = null;
@@ -137,6 +70,11 @@ export class Viewer {
   }
 
   requestRender() { this._needsRender = true; }
+
+  setHeightRange(zmin, zmax) {
+    this.uniforms.uHRange.value.set(zmin, zmax);
+    this.requestRender();
+  }
 
   // Grow the label -> color texture so it covers maxLabel.
   ensurePalette(maxLabel, force = false) {
@@ -174,7 +112,20 @@ export class Viewer {
     this.requestRender();
   }
 
-  setCloud(positions, labels) {
+  clearCloud() {
+    if (this.points) {
+      this.scene.remove(this.points);
+      this.geom.dispose();
+    }
+    this.points = null;
+    this.geom = null;
+    this.n = 0;
+    this._proj = null;
+    this._visVersion++;
+    this.requestRender();
+  }
+
+  setCloud(positions, labels, { frame = true } = {}) {
     if (this.points) {
       this.scene.remove(this.points);
       this.geom.dispose();
@@ -198,9 +149,11 @@ export class Viewer {
     this.points.frustumCulled = false;
     this.scene.add(this.points);
     this.bounds = g.boundingBox.clone();
+    if (state.mode === "single") this.setHeightRange(this.bounds.min.z, this.bounds.max.z);
     this.n = n;
     this._visVersion++;
-    this.frameBox(this.bounds, true);
+    if (frame) this.frameBox(this.bounds, true);
+    else this.requestRender();
   }
 
   // Patch a subset of labels (display indices -> new label).

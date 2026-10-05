@@ -37,6 +37,31 @@ class JobFailed(Exception):
     """Expected job failure: shown to the user without a traceback."""
 
 
+def start_background_job(jobs: Dict[str, "Job"], kind: str, fn: Callable[["Job"], None]) -> "Job":
+    """Run fn(job) on a daemon thread with progress capture; errors land in job.message."""
+    job = Job(kind)
+    jobs[job.id] = job
+
+    def _run() -> None:
+        try:
+            with _capture_progress(job):
+                fn(job)
+            job.progress = 1.0
+            job.state = "done"
+        except JobFailed as exc:
+            job.state = "error"
+            job.message = str(exc)
+        except Exception as exc:  # surfaced to the UI
+            job.state = "error"
+            job.message = f"{type(exc).__name__}: {exc}"
+            job.result = {"traceback": traceback.format_exc()[-4000:]}
+        finally:
+            job.finished = time.time()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return job
+
+
 def is_tile_prefix(path: Path) -> bool:
     if Path(str(path) + "_scan.laz").exists() or Path(str(path) + "_scan.las").exists():
         return True
@@ -182,6 +207,8 @@ class Session:
         self._edits_since_autosave = 0
         self.last_saved: Optional[str] = None
         self.jobs: Dict[str, Job] = {}
+        # Set when this cloud is an edit region of an island project (see project_session.RegionLink).
+        self.link = None
 
     # ── loading ────────────────────────────────────────────────────────────
     def load(self, path: str, mode: str = "gt", max_display: Optional[int] = None) -> Dict[str, Any]:
@@ -215,10 +242,24 @@ class Session:
         meta: Optional[dict] = None,
         source: str = "",
         max_display: Optional[int] = None,
+        origin: Optional[np.ndarray] = None,
+        link=None,
     ) -> Dict[str, Any]:
-        return self._set_cloud(xyz, intensity, labels, name, meta or {}, source, max_display)
+        return self._set_cloud(xyz, intensity, labels, name, meta or {}, source, max_display, origin, link)
 
-    def _set_cloud(self, xyz, inten, labels, name, meta, source, max_display) -> Dict[str, Any]:
+    def unload(self) -> None:
+        if self.busy():
+            raise SessionError("A background job is running.", 409)
+        with self.lock:
+            self.loaded = False
+            self.xyz = self.intensity = None
+            self.editor = None
+            self.lod = None
+            self.link = None
+            self._kdtree = None
+
+    def _set_cloud(self, xyz, inten, labels, name, meta, source, max_display,
+                   origin=None, link=None) -> Dict[str, Any]:
         xyz = np.asarray(xyz, dtype=np.float64)
         inten = np.asarray(inten, dtype=np.float64).reshape(-1)
         n = len(xyz)
@@ -235,12 +276,18 @@ class Session:
             self.editor = LabelEditor(labels) if labels is not None else LabelEditor(n_points=n)
             self.lod = lod
             disp = xyz[lod.display_idx]
-            self.origin = disp.mean(axis=0) if len(disp) else np.zeros(3)
+            if origin is not None:
+                self.origin = np.asarray(origin, dtype=np.float64)
+            else:
+                self.origin = disp.mean(axis=0) if len(disp) else np.zeros(3)
             self.name = name
             self.meta = dict(meta or {})
             self.source = source
             self.source_method = "existing_gt" if labels is not None else "manual"
             self.reviewed = set(int(t) for t in self.meta.get("reviewed_trees", []) or [])
+            self.link = link
+            if link is not None:
+                self.editor.id_allocator = link.allocate_id
             self.wood_mask = self.leaf_mask = None
             self.wood_leaf_method = None
             self._kdtree = None
@@ -259,7 +306,7 @@ class Session:
 
     def autosave_info(self) -> Optional[Dict[str, Any]]:
         p = self.autosave_path()
-        if not self.loaded or not p.exists():
+        if not self.loaded or self.link is not None or not p.exists():
             return None
         try:
             arr = np.load(str(p), mmap_mode="r")
@@ -283,7 +330,8 @@ class Session:
             "voxel_size": self.lod.voxel_size,
             "origin": [float(v) for v in self.origin],
             "num_trees": ed.num_trees,
-            "next_tree_id": ed.next_tree_id(),
+            "next_tree_id": self.link.peek_next_id() if self.link else ed.next_tree_id(),
+            "linked": self.link.describe() if self.link else None,
             "dirty": ed.dirty,
             "can_undo": ed.can_undo,
             "can_redo": ed.can_redo,
@@ -364,9 +412,12 @@ class Session:
     # ── editing ────────────────────────────────────────────────────────────
     def _edit_result(self, changed_full: np.ndarray, extra: Optional[dict] = None) -> Dict[str, Any]:
         disp = self.lod.display_of_full(changed_full)
-        self._edits_since_autosave += 1
-        if self._edits_since_autosave >= AUTOSAVE_EVERY:
-            self.autosave()
+        if self.link is not None:
+            self.link.write(changed_full, self.editor.labels[changed_full])
+        else:
+            self._edits_since_autosave += 1
+            if self._edits_since_autosave >= AUTOSAVE_EVERY:
+                self.autosave()
         res = {
             "changed_points": int(len(changed_full)),
             "display_idx": disp,
@@ -410,9 +461,17 @@ class Session:
                     raise SessionError("Nothing to merge (select points from other trees).")
                 src_mask = np.isin(ed.labels, np.asarray(sources, dtype=np.int32))
                 ed.reassign(src_mask, int(target))
+                if self.link is not None and len(ed.last_changed):
+                    # Whole-tree merge: points of these trees outside the region follow along.
+                    self.link.write(ed.last_changed, ed.labels[ed.last_changed])
+                    outside = self.link.merge_outside(sources, int(target))
+                    ed.last_diff.extra = outside
+                    extra["outside_points"] = int(sum(len(c.idx) for c in outside))
                 extra["merged"] = sources
                 self.reviewed.difference_update(sources)
             elif op == "compact":
+                if self.link is not None:
+                    raise SessionError("Compacting ids is disabled in project regions (ids are island-wide).")
                 ed.compact()
                 self.reviewed.clear()
             else:
@@ -422,19 +481,27 @@ class Session:
     def undo(self) -> Dict[str, Any]:
         self.require()
         with self.lock:
+            d = self.editor.last_diff
             if not self.editor.undo():
                 raise SessionError("Nothing to undo.")
+            if self.link is not None and d is not None and d.extra:
+                self.link.apply(d.extra, reverse=True)
             return self._edit_result(self.editor.last_changed)
 
     def redo(self) -> Dict[str, Any]:
         self.require()
         with self.lock:
+            d = self.editor.next_redo
             if not self.editor.redo():
                 raise SessionError("Nothing to redo.")
+            if self.link is not None and d is not None and d.extra:
+                self.link.apply(d.extra, reverse=False)
             return self._edit_result(self.editor.last_changed)
 
     def set_reviewed(self, tree_id: int, value: bool) -> None:
         self.require()
+        if self.link is not None:
+            self.link.ps.set_reviewed(tree_id, value)
         with self.lock:
             if value:
                 self.reviewed.add(int(tree_id))
@@ -549,27 +616,7 @@ class Session:
         self.require()
         if self.busy():
             raise SessionError("Another job is already running.", 409)
-        job = Job(kind)
-        self.jobs[job.id] = job
-
-        def _run() -> None:
-            try:
-                with _capture_progress(job):
-                    fn(job)
-                job.progress = 1.0
-                job.state = "done"
-            except JobFailed as exc:
-                job.state = "error"
-                job.message = str(exc)
-            except Exception as exc:  # surfaced to the UI
-                job.state = "error"
-                job.message = f"{type(exc).__name__}: {exc}"
-                job.result = {"traceback": traceback.format_exc()[-4000:]}
-            finally:
-                job.finished = time.time()
-
-        threading.Thread(target=_run, daemon=True).start()
-        return job
+        return start_background_job(self.jobs, kind, fn)
 
     def run_segmentation(self, method: str, leaf_removal: bool, treex_stock: bool) -> Job:
         from ..segment import run_method
@@ -589,8 +636,17 @@ class Session:
                 hint = "" if self.has_intensity() else " This cloud has no intensity variation, which some methods rely on."
                 raise JobFailed(f"{method}: {reason}. Labels were not changed.{hint}")
             job.stage("Applying labels", 1.0)
+            if self.link is not None:
+                # Method ids are 0..k; give them fresh island-wide ids.
+                pos = lab >= 0
+                uniq, inv = np.unique(lab[pos], return_inverse=True)
+                first = self.link.allocate_ids(len(uniq))
+                lab = lab.copy()
+                lab[pos] = (inv + first).astype(np.int32)
             with self.lock:
                 self.editor.set_all(lab, record_undo=True)
+                if self.link is not None:
+                    self.link.write(self.editor.last_changed, self.editor.labels[self.editor.last_changed])
                 self.source_method = method
                 self.reviewed.clear()
             job.message = info["message"]

@@ -3,6 +3,7 @@
   cd SyntheticPipeline
   python -m instance_annotator            # opens http://127.0.0.1:8765
   python -m instance_annotator --load testdataset/real_instance/l1w_t00_03
+  python -m instance_annotator --project D:/pointclouds/island_project
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
+from instance_annotator.server import project_routes  # noqa: E402
 from instance_annotator.server.routes import router, session  # noqa: E402
 
 WEB_DIR = Path(__file__).resolve().parents[1] / "web"
@@ -30,6 +32,7 @@ WEB_DIR = Path(__file__).resolve().parents[1] / "web"
 def create_app() -> FastAPI:
     app = FastAPI(title="TLS Instance Annotator", docs_url="/api/docs")
     app.include_router(router)
+    app.include_router(project_routes.router)
 
     @app.middleware("http")
     async def no_cache(request, call_next):
@@ -58,8 +61,12 @@ def main(argv=None) -> None:
     ap.add_argument("--blank", action="store_true", help="Ignore *_instances.npy when loading")
     ap.add_argument("--max_display", type=int, default=None, help="Display LOD point cap")
     ap.add_argument("--no_browser", action="store_true")
+    ap.add_argument("--project", default="", help="Island project folder to open on start")
     args = ap.parse_args(argv)
 
+    if args.project:
+        info = project_routes.psession.open(args.project)
+        print(f"Project {info['name']}: {len(info['tiles'])} tiles, {info['num_points']:,} pts")
     if args.load:
         print(f"Loading {args.load} ...")
         info = session.load(args.load, "blank" if args.blank else "gt", args.max_display)

@@ -11,13 +11,24 @@ import {
 } from "./panels.js";
 import { initShortcuts, showHelp } from "./shortcuts.js";
 import { modal, confirmDialog, toast, el, busyStart, setProgress, fmtElapsed } from "./ui.js";
+import { Island } from "./island.js";
 
 const $ = (id) => document.getElementById(id);
 
 const viewer = new Viewer($("canvas-host"));
 const tools = new SelectionTools(viewer, $("viewport"), $("overlay"), $("hud-hover"));
 const viewPanel = initViewPanel(viewer);
-window.__annotator = { state, viewer, tools };
+const island = new Island(viewer, {
+  updateChrome: () => updateChrome(),
+  loadCloudData: (opts) => loadCloudData(opts),
+  resetSingle: () => resetSingle(),
+  errorToast: (e) => errorToast(e),
+  guarded: (fn, label) => guarded(fn, label),
+  runJob: (...a) => runJob(...a),
+  setFocus: (id, f) => setFocus(id, f),
+  viewPanel,
+});
+window.__annotator = { state, viewer, tools, island };
 
 // ── helpers ──────────────────────────────────────────────────────────────
 function errorToast(err) {
@@ -46,17 +57,33 @@ async function guarded(fn, label = "Working...") {
 function updateChrome() {
   const info = state.info;
   const loaded = !!info.loaded;
-  $("empty-state").classList.toggle("hidden", loaded);
-  $("hud").classList.toggle("hidden", !loaded);
-  $("view-panel").classList.toggle("hidden", !loaded);
-  $("file-name").textContent = loaded
-    ? `${info.name} · ${info.num_points.toLocaleString()} pts` + (info.num_display < info.num_points ? ` (showing ${info.num_display.toLocaleString()})` : "")
-    : "No cloud loaded";
-  $("file-name").title = info.source || "";
-  $("dirty-dot").classList.toggle("hidden", !(loaded && info.dirty));
-  $("btn-undo").disabled = !loaded || !info.can_undo;
-  $("btn-redo").disabled = !loaded || !info.can_redo;
-  $("btn-save").disabled = !loaded;
+  const mode = state.mode, proj = island.project;
+  const shown = loaded || mode !== "single";
+  $("empty-state").classList.toggle("hidden", shown);
+  $("hud").classList.toggle("hidden", !shown);
+  $("view-panel").classList.toggle("hidden", !shown);
+  if (mode === "island") {
+    $("file-name").textContent = `${proj.name} · ${proj.num_points.toLocaleString()} pts · ${proj.tiles.length} tiles`;
+    $("file-name").title = proj.root;
+  } else {
+    $("file-name").textContent = loaded
+      ? (mode === "region" ? `${proj?.name} region · ` : `${info.name} · `) + `${info.num_points.toLocaleString()} pts` +
+        (info.num_display < info.num_points ? ` (showing ${info.num_display.toLocaleString()})` : "")
+      : "No cloud loaded";
+    $("file-name").title = info.source || "";
+  }
+  $("dirty-dot").classList.toggle("hidden", !(loaded && info.dirty && mode === "single"));
+  if (mode === "island") {
+    $("btn-undo").disabled = !proj.can_undo;
+    $("btn-redo").disabled = !proj.can_redo;
+  } else {
+    $("btn-undo").disabled = !loaded || !info.can_undo;
+    $("btn-redo").disabled = !loaded || !info.can_redo;
+  }
+  $("btn-save").disabled = !loaded || mode !== "single";
+  $("btn-save").title = mode === "single" ? "Save (Ctrl+S)" : "Island edits are saved to the project automatically";
+  $("btn-compact").classList.toggle("hidden", mode !== "single");
+  island.updateChrome();
   $("btn-wl-run").disabled = !loaded || state.busy;
   $("btn-seg-run").disabled = !loaded || state.busy;
   const noSel = state.selCount === 0;
@@ -67,10 +94,12 @@ function updateChrome() {
     ? (info.last_saved ? `Last saved ${info.last_saved}. ` : "Not saved this session. ") +
       (as ? `Autosave: ${new Date(as.mtime * 1000).toLocaleTimeString()}` : "Autosave every 10 edits.")
     : "";
-  document.title = loaded ? `${info.dirty ? "* " : ""}${info.name} - TLS Annotator` : "TLS Instance Annotator";
+  document.title = mode !== "single" ? `${proj?.name} - TLS Annotator`
+    : loaded ? `${info.dirty ? "* " : ""}${info.name} - TLS Annotator` : "TLS Instance Annotator";
 }
 
 async function refreshTrees() {
+  if (state.mode === "island") { await island.refreshTrees(); return; }
   const { trees } = await getJSON("/api/trees");
   state.trees = trees;
   state.treeById = new Map(trees.map((t) => [t.id, t]));
@@ -88,7 +117,24 @@ function refreshTreesSoon() {
 }
 
 // ── loading ──────────────────────────────────────────────────────────────
-async function loadCloudData() {
+// Drop the single-cloud / region data from the client (the island layer stays).
+function resetSingle() {
+  viewer.clearCloud();
+  state.info = { loaded: false, origin: island.project?.origin };
+  state.positions = null;
+  state.labels = null;
+  state.n = 0;
+  state.selection = null;
+  state.material = null;
+  state.selCount = 0;
+  state.focusedTree = null;
+  viewer.applyView();
+  const b = island.layer.bounds();
+  if (b) viewPanel.resetSlab(b.min.z, b.max.z);
+  updateChrome();
+}
+
+async function loadCloudData({ frame = true } = {}) {
   state.info = await getJSON("/api/status");
   if (!state.info.loaded) { updateChrome(); return; }
   const [pts, labs] = await Promise.all([getBinary("/api/points"), getBinary("/api/labels")]);
@@ -102,8 +148,8 @@ async function loadCloudData() {
   state.focusedTree = null;
   state.view.isolate = false;
   if (state.info.wood_leaf_method) state.material.set(new Uint8Array(await getBinary("/api/material")));
-  else state.view.colorMode = 0;
-  viewer.setCloud(state.positions, state.labels);
+  else if (state.view.colorMode === 1) state.view.colorMode = 0;
+  viewer.setCloud(state.positions, state.labels, { frame });
   const b = viewer.bounds;
   viewPanel.resetSlab(b.min.z, b.max.z);
   syncViewControls();
@@ -126,6 +172,9 @@ async function openDialog() {
   const modeBlank = el("input", { type: "radio", name: "mode", value: "blank" });
   const maxDisp = el("input", { type: "number", value: localStorage.getItem("maxDisplay") || 2000000, step: 250000, min: 50000 });
   const fileIn = el("input", { type: "file", accept: ".laz,.las,.ply" });
+  const recentProjects = JSON.parse(localStorage.getItem("recentProjects") || "[]");
+  let projectPath = null;
+  pathIn.addEventListener("input", () => { projectPath = null; });
 
   async function browse(dir) {
     try {
@@ -133,6 +182,14 @@ async function openDialog() {
       dirLabel.textContent = r.dir;
       const items = [];
       if (r.parent) items.push(el("div", { class: "item dir", onclick: () => browse(r.parent) }, ".."));
+      for (const pr of r.projects || []) {
+        items.push(el("div", {
+          class: "item", title: pr.path,
+          onclick: (e) => { pathIn.value = pr.path; projectPath = pr.path; mark(e.currentTarget); },
+          ondblclick: () => document.querySelector(".modal .btn.primary")?.click(),
+        }, el("span", { text: pr.name }), el("span", { class: "badge", text: "island project" })));
+      }
+      if (r.is_project) projectPath = r.dir;
       for (const d of r.dirs) items.push(el("div", { class: "item dir", onclick: () => browse(`${r.dir}/${d}`) }, d));
       for (const t of r.tiles) {
         items.push(el("div", {
@@ -162,7 +219,9 @@ async function openDialog() {
   const body = el("div", { style: "display:flex;flex-direction:column;gap:8px" },
     el("label", {}, "Tile prefix or LAZ/LAS/PLY path", pathIn),
     recent.length ? el("div", { class: "chips" }, recent.slice(0, 6).map((p) =>
-      el("span", { class: "chip", title: p, text: p.split(/[\\/]/).pop(), onclick: () => { pathIn.value = p; } }))) : null,
+      el("span", { class: "chip", title: p, text: p.split(/[\\/]/).pop(), onclick: () => { pathIn.value = p; projectPath = null; } }))) : null,
+    recentProjects.length ? el("div", { class: "chips" }, recentProjects.slice(0, 4).map((p) =>
+      el("span", { class: "chip", title: p, text: `island: ${p.split(/[\\/]/).pop()}`, onclick: () => { pathIn.value = p; projectPath = p; } }))) : null,
     dirLabel, listEl,
     el("div", { class: "row" },
       el("label", { class: "check" }, modeGt, "Use existing labels (*_instances.npy)"),
@@ -173,14 +232,20 @@ async function openDialog() {
   browse(pathIn.value.includes("/") || pathIn.value.includes("\\") ? pathIn.value.replace(/[\\/][^\\/]*$/, "") : "testdataset");
 
   const choice = await modal({
-    title: "Open cloud", body, wide: true,
+    title: "Open cloud or island project", body, wide: true,
     buttons: [{ label: "Cancel", value: null }, { label: "Open", value: "open", primary: true }],
-    collect: () => ({ path: pathIn.value.trim(), mode: modeBlank.checked ? "blank" : "gt", maxDisplay: Number(maxDisp.value) || null, file: fileIn.files[0] }),
+    collect: () => ({
+      path: pathIn.value.trim(), mode: modeBlank.checked ? "blank" : "gt", maxDisplay: Number(maxDisp.value) || null,
+      file: fileIn.files[0], project: projectPath && pathIn.value.trim() === projectPath ? projectPath : null,
+    }),
   });
   if (!choice) return;
   localStorage.setItem("maxDisplay", String(choice.maxDisplay || 2000000));
 
+  if (choice.project) { await openProject(choice.project); return; }
+
   await guarded(async () => {
+    if (island.active) await island.leave();
     const t = toast(choice.file ? `Uploading ${choice.file.name}...` : `Loading ${choice.path}...`, "busy", 0);
     try {
       if (choice.file) await upload(choice.file, choice.maxDisplay);
@@ -195,6 +260,21 @@ async function openDialog() {
     toast(`Loaded ${state.info.name}: ${state.info.num_points.toLocaleString()} pts, ${state.info.num_trees} trees`, "success");
     await offerAutosave();
   }, choice.file ? "Uploading..." : "Loading cloud...");
+}
+
+async function openProject(path) {
+  await guarded(async () => {
+    const t = toast(`Opening island project ${path}...`, "busy", 0);
+    try {
+      if (island.active) await island.leave();
+      const info = await postJSON("/api/project/open", { path });
+      resetSingle();
+      await island.enter(info);
+      const rec = [path, ...JSON.parse(localStorage.getItem("recentProjects") || "[]").filter((p) => p !== path)].slice(0, 6);
+      localStorage.setItem("recentProjects", JSON.stringify(rec));
+    } finally { t.close(); }
+    toast(`Opened ${island.project.name}: ${island.project.num_points.toLocaleString()} pts in ${island.project.tiles.length} tiles`, "success");
+  }, "Opening project...");
 }
 
 async function offerAutosave() {
@@ -234,6 +314,7 @@ async function applyEditResult(res) {
   state.info = res.info;
   updateChrome();
   refreshTreesSoon();
+  island.contextChanged();
 }
 
 function clearSelection() {
@@ -331,6 +412,7 @@ function runAction(name) {
 }
 
 async function undoRedo(which) {
+  if (state.mode === "island") { await island.undoRedo(which); return; }
   if (!state.info.loaded) return;
   await guarded(async () => {
     const res = await postJSON(`/api/${which}`);
@@ -344,6 +426,11 @@ function setFocus(id, frame = false) {
   state.focusedTree = id;
   viewer.applyView();
   markFocusedRow();
+  if (state.mode === "island") {
+    if (frame && id !== null) island.flyToTree(id);
+    updateChrome();
+    return;
+  }
   if (frame && id !== null) viewer.frameIndices((i) => state.labels[i] === id);
 }
 
@@ -356,6 +443,7 @@ function stepTree(dir) {
 }
 
 async function setReviewed(id, value) {
+  if (state.mode === "island") { await island.setReviewed(id, value); return; }
   try {
     state.info = await postJSON("/api/review", { tree_id: id, reviewed: value });
     const t = state.treeById.get(id);
@@ -366,7 +454,8 @@ async function setReviewed(id, value) {
 }
 
 function frame() {
-  if (state.selCount) viewer.frameIndices((i) => state.selection[i] === 1);
+  if (state.mode === "island") island.frame();
+  else if (state.selCount) viewer.frameIndices((i) => state.selection[i] === 1);
   else if (state.focusedTree !== null) viewer.frameIndices((i) => state.labels[i] === state.focusedTree);
   else viewer.frameAll();
 }
@@ -401,9 +490,9 @@ function showJobError(box, message, traceback) {
   if (traceback) box.appendChild(el("details", {}, el("summary", { class: "muted", text: "Traceback" }), el("pre", { text: traceback })));
 }
 
-/** pane: "wl" | "seg" (ids btn-<pane>-run, <pane>-status, <pane>-result). */
+/** pane: "wl" | "seg" | "iseg" | "istitch" | "iexp" (ids btn-<pane>-run, <pane>-status, <pane>-result). */
 async function runJob(url, body, label, pane, onDone) {
-  if (!state.info.loaded || state.busy) return;
+  if (state.busy) return;
   const btn = $(`btn-${pane}-run`), status = $(`${pane}-status`), result = $(`${pane}-result`);
   const track = status.querySelector(".progress"), msgEl = status.querySelector(".job-msg"), detEl = status.querySelector(".job-detail");
   const btnText = btn.textContent;
@@ -547,8 +636,9 @@ initShortcuts({
 });
 
 window.addEventListener("beforeunload", (e) => {
-  if (state.info.loaded && state.info.dirty) { e.preventDefault(); e.returnValue = ""; }
+  if (state.mode === "single" && state.info.loaded && state.info.dirty) { e.preventDefault(); e.returnValue = ""; }
 });
+on("view", () => island.layer.applyView());
 
 // Initial state: methods for the side panels, then whatever the server already has loaded.
 (async () => {
@@ -556,6 +646,13 @@ window.addEventListener("beforeunload", (e) => {
     const m = await getJSON("/api/methods");
     initWoodLeaf(m.woodleaf, runWoodLeaf, m.woodleaf_needs_intensity || []);
     initSegment(m.segment, runSegmentation);
+    island.initMethods(m.segment);
+    const ps = await getJSON("/api/project/status");
+    if (ps.open) {
+      document.body.classList.remove("booting");
+      await island.enter(ps);
+      return;
+    }
     await loadCloudData();
     document.body.classList.remove("booting");
     if (state.info.loaded) await offerAutosave();

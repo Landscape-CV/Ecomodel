@@ -96,9 +96,13 @@ def browse(dir: str = ""):
         entries = sorted(base.iterdir(), key=lambda p: p.name.lower())
     except PermissionError:
         return JSONResponse({"error": f"Permission denied: {base}"}, status_code=403)
+    projects: List[Dict[str, Any]] = []
     for p in entries:
         if p.is_dir():
-            dirs.append(p.name)
+            if (p / "project.json").exists():
+                projects.append({"name": p.name, "path": str(p)})
+            else:
+                dirs.append(p.name)
             continue
         nm = p.name
         low = nm.lower()
@@ -116,14 +120,24 @@ def browse(dir: str = ""):
         "dir": str(base),
         "parent": str(base.parent) if base.parent != base else None,
         "dirs": dirs,
+        "projects": projects,
+        "is_project": (base / "project.json").exists(),
         "tiles": list(tiles.values()),
         "files": files,
     }
 
 
+def _leave_region() -> None:
+    if session.link is not None:
+        from . import project_routes
+
+        project_routes.psession.close_region()
+
+
 @router.post("/load")
 def load(req: LoadReq):
     try:
+        _leave_region()
         return session.load(req.path, req.mode, req.max_display)
     except SessionError as exc:
         return _err(exc)
@@ -142,6 +156,7 @@ async def upload(file: UploadFile = File(...), max_display: Optional[int] = Form
             while chunk := await file.read(8 * 1024 * 1024):
                 fh.write(chunk)
         xyz, inten = load_cloud(tmp)
+        _leave_region()
         return session.load_arrays(
             xyz, inten, None, Path(file.filename).stem.replace("_scan", ""),
             {"source_file": file.filename}, source=f"upload:{file.filename}",
@@ -287,7 +302,9 @@ def woodleaf(req: WoodLeafReq):
 
 @router.get("/jobs/{job_id}")
 def job(job_id: str):
-    j = session.jobs.get(job_id)
+    from . import project_routes
+
+    j = session.jobs.get(job_id) or project_routes.psession.jobs.get(job_id)
     if j is None:
         return JSONResponse({"error": "unknown job"}, status_code=404)
     return j.to_dict()

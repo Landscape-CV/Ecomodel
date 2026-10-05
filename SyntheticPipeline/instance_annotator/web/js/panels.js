@@ -36,14 +36,14 @@ export function initTreeTable() {
   const tbody = $("tree-table").querySelector("tbody");
   tbody.addEventListener("click", (e) => {
     const tr = e.target.closest("tr");
-    if (!tr || e.target.matches("input")) return;
+    if (!tr || !tr.dataset.id || e.target.matches("input")) return;
     const id = Number(tr.dataset.id);
     if (e.shiftKey || e.ctrlKey) emit("select-tree", { id, op: e.ctrlKey ? "sub" : "add" });
     else emit("focus-tree", { id, frame: false });
   });
   tbody.addEventListener("dblclick", (e) => {
     const tr = e.target.closest("tr");
-    if (tr) emit("isolate-tree", Number(tr.dataset.id));
+    if (tr?.dataset.id) emit("isolate-tree", Number(tr.dataset.id));
   });
   tbody.addEventListener("change", (e) => {
     if (!e.target.matches("input[type=checkbox]")) return;
@@ -52,10 +52,19 @@ export function initTreeTable() {
   on("selection", markSelectedRows);
 }
 
+const MAX_ROWS = 2000;
+
 export function renderTrees() {
   const tbody = $("tree-table").querySelector("tbody");
   const frag = document.createDocumentFragment();
-  for (const t of orderedTrees()) {
+  const list = orderedTrees();
+  let shown = list.length > MAX_ROWS ? list.slice(0, MAX_ROWS) : list;
+  const f = state.focusedTree;
+  if (f !== null && shown !== list && !shown.some((t) => t.id === f)) {
+    const ft = state.treeById.get(f);
+    if (ft) shown = [ft, ...shown];
+  }
+  for (const t of shown) {
     const row = el("tr", { "data-id": t.id, class: t.id === state.focusedTree ? "focused" : null },
       el("td", {}, el("span", { class: "swatch", style: `background:${cssColor(t.id)}` })),
       el("td", { text: String(t.id) }),
@@ -64,6 +73,10 @@ export function renderTrees() {
       el("td", {}, el("input", { type: "checkbox", checked: t.reviewed, title: "Reviewed (K)" })),
     );
     frag.appendChild(row);
+  }
+  if (list.length > MAX_ROWS) {
+    frag.appendChild(el("tr", {}, el("td", { colspan: 5, class: "muted",
+      text: `${(list.length - MAX_ROWS).toLocaleString()} more trees: use the filter or sort` })));
   }
   tbody.replaceChildren(frag);
   const nRev = state.trees.filter((t) => t.reviewed).length;
