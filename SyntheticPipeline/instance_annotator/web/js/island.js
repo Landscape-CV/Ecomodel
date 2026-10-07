@@ -81,6 +81,7 @@ export class Island {
     this.project = null;
     this.regionBox = null;
     this.pendingBox = null;
+    this._syncBoxEditor();
     state.mode = "single";
     $("tab-island").classList.add("hidden");
     showTab("trees");
@@ -207,17 +208,123 @@ export class Island {
     this.setPendingBox({ min: [t.bmin[0] - m, t.bmin[1] - m], max: [t.bmax[0] + m, t.bmax[1] + m] });
   }
 
+  // Point-level tools need full-resolution points: open a region around the focused tree, or the
+  // area the camera is looking at. Resolves true once a region is open.
+  async ensureRegion() {
+    if (state.mode === "region") return true;
+    if (state.mode !== "island" || state.busy) return false;
+    const t = state.treeById.get(state.focusedTree);
+    let box;
+    if (t && t.bmin) {
+      const m = Math.max(0, Number($("region-margin").value) || 0);
+      box = { min: [t.bmin[0] - m, t.bmin[1] - m], max: [t.bmax[0] + m, t.bmax[1] + m] };
+    } else {
+      const c = this.v.controls.target;
+      const half = Math.min(25, Math.max(8, 0.25 * this.v.camera.position.distanceTo(c)));
+      box = { min: [c.x - half, c.y - half], max: [c.x + half, c.y + half] };
+    }
+    toast(t ? `Opening an edit region around tree ${t.id} for point editing...`
+      : "Opening an edit region around the view centre for point editing (focus a tree first to centre on it)...", "info");
+    await this.setPendingBox(box);
+    await this.openRegion();
+    return state.mode === "region";
+  }
+
   async setPendingBox(box) {
     this.pendingBox = box;
     this._showHelper(box);
+    this._syncBoxEditor();
+    await this._estimate(box);
+    this.hooks.updateChrome();
+  }
+
+  async _estimate(box) {
+    const seq = (this._estSeq = (this._estSeq || 0) + 1);
     const w = box.max[0] - box.min[0], h = box.max[1] - box.min[1];
     $("region-info").textContent = `${w.toFixed(1)} x ${h.toFixed(1)} m · estimating...`;
     try {
-      const o = this.project.origin;
       const r = await getJSON(`/api/project/estimate?x0=${box.min[0]}&y0=${box.min[1]}&x1=${box.max[0]}&y1=${box.max[1]}`);
+      if (seq !== this._estSeq) return;
       const warn = r.upper > r.max_points ? ` (limit ${(r.max_points / 1e6).toFixed(0)}M, may be too large)` : "";
-      $("region-info").textContent = `${w.toFixed(1)} x ${h.toFixed(1)} m at ${(box.min[0] + o[0]).toFixed(0)}, ${(box.min[1] + o[1]).toFixed(0)} · up to ${r.upper.toLocaleString()} pts${warn}`;
+      $("region-info").textContent = `${w.toFixed(1)} x ${h.toFixed(1)} m · up to ${r.upper.toLocaleString()} pts${warn}`;
     } catch (err) { this.hooks.errorToast(err); }
+  }
+
+  // ── box editor (centre / size sliders, absolute easting / northing) ────
+  _initBoxEditor() {
+    const root = $("region-edit");
+    root.addEventListener("input", (e) => {
+      const k = e.target.dataset.k;
+      if (!k || !this.pendingBox) return;
+      const v = Number(e.target.value);
+      if (!Number.isFinite(v)) return;
+      for (const inp of root.querySelectorAll(`input[data-k="${k}"]`)) if (inp !== e.target) inp.value = e.target.value;
+      const o = this.project.origin, b = this.pendingBox;
+      let cx = (b.min[0] + b.max[0]) / 2, cy = (b.min[1] + b.max[1]) / 2;
+      let w = b.max[0] - b.min[0], h = b.max[1] - b.min[1];
+      if (k === "cx") cx = v - o[0];
+      else if (k === "cy") cy = v - o[1];
+      else if (k === "w") w = Math.max(1, v);
+      else if (k === "h") h = Math.max(1, v);
+      this._updateBox({ min: [cx - w / 2, cy - h / 2], max: [cx + w / 2, cy + h / 2] });
+    });
+    $("btn-region-here").addEventListener("click", () => {
+      const b = this.pendingBox;
+      if (!b) return;
+      const t = this.v.controls.target, w = b.max[0] - b.min[0], h = b.max[1] - b.min[1];
+      this._updateBox({ min: [t.x - w / 2, t.y - h / 2], max: [t.x + w / 2, t.y + h / 2] });
+      this._syncBoxEditor();
+    });
+    $("btn-region-look").addEventListener("click", () => {
+      const b = this.pendingBox;
+      if (!b) return;
+      const lb = this.layer.bounds();
+      this.v.frameBox(new THREE.Box3(new THREE.Vector3(b.min[0], b.min[1], lb.min.z), new THREE.Vector3(b.max[0], b.max[1], lb.max.z)));
+    });
+    $("btn-region-clear").addEventListener("click", () => this.clearPendingBox());
+  }
+
+  // Live update while dragging a slider; the point estimate waits until the slider settles.
+  _updateBox(box) {
+    this.pendingBox = box;
+    this._showHelper(box);
+    clearTimeout(this._estTimer);
+    this._estTimer = setTimeout(() => this._estimate(box), 300);
+  }
+
+  _syncBoxEditor() {
+    const root = $("region-edit"), b = this.pendingBox;
+    root.classList.toggle("hidden", !b || state.mode !== "island");
+    if (!b) return;
+    const o = this.project.origin, lb = this.layer.bounds();
+    const vals = {
+      cx: (b.min[0] + b.max[0]) / 2 + o[0], cy: (b.min[1] + b.max[1]) / 2 + o[1],
+      w: b.max[0] - b.min[0], h: b.max[1] - b.min[1],
+    };
+    const ranges = { cx: [lb.min.x + o[0], lb.max.x + o[0]], cy: [lb.min.y + o[1], lb.max.y + o[1]] };
+    for (const inp of root.querySelectorAll("input[data-k]")) {
+      const k = inp.dataset.k;
+      if (ranges[k] && inp.type === "range") {
+        inp.min = Math.floor(ranges[k][0]);
+        inp.max = Math.ceil(ranges[k][1]);
+        inp.step = 0.5;
+      }
+      if (k === "w" || k === "h") {
+        const cap = Math.max(150, Math.ceil(vals[k]));
+        if (inp.type === "range") inp.max = cap;
+      }
+      inp.value = vals[k].toFixed(1);
+    }
+  }
+
+  clearPendingBox() {
+    this.pendingBox = null;
+    this._estSeq = (this._estSeq || 0) + 1;
+    clearTimeout(this._estTimer);
+    if (!this.regionBox) this._removeHelper();
+    $("region-info").textContent = "";
+    this._syncBoxEditor();
+    this._drawMinimapSoon();
     this.hooks.updateChrome();
   }
 
@@ -233,8 +340,12 @@ export class Island {
         state.mode = "region";
         this.regionBox = box;
         this.pendingBox = null;
+        clearTimeout(this._estTimer);
+        this._estSeq = (this._estSeq || 0) + 1;
+        this._syncBoxEditor();
         this.layer.setContext(box);
         await this.hooks.loadCloudData({ frame: false });
+        if (this.v.bounds && !this.v.bounds.isEmpty()) this.v.frameBox(this.v.bounds);
         $("region-info").textContent = `Region open: ${r.info.num_points.toLocaleString()} pts. Edits go straight to the project.`;
         showTab("trees");
       } finally { t.close(); }
@@ -413,6 +524,7 @@ export class Island {
     setB();
     $("isl-adaptive").addEventListener("change", (e) => this.layer.setAdaptive(e.target.checked));
     $("btn-region-draw").addEventListener("click", () => this.startDraw());
+    this._initBoxEditor();
     $("btn-region-tree").addEventListener("click", () => this.regionAroundTree());
     $("btn-region-open").addEventListener("click", () => this.openRegion());
     $("btn-region-close").addEventListener("click", () => this.closeRegion());

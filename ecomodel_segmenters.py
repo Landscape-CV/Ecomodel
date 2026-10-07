@@ -1218,10 +1218,11 @@ class SegmenterTreeLearn:
         # TreeLearn keys on-disk caches by plot_name = basename(work_dir).
         # Always use a unique directory so shared lite/benchmark output_dir
         # cannot reuse tiles from a previous tile/call.
-        _tmp_ctx = tempfile.TemporaryDirectory(prefix="treelearn_")
-        work_dir = _tmp_ctx.name
+        # Tiles take GBs per call: keep them next to output_dir (not the system temp drive).
         if output_dir is not None:
             os.makedirs(output_dir, exist_ok=True)
+        _tmp_ctx = tempfile.TemporaryDirectory(prefix="treelearn_", dir=output_dir)
+        work_dir = _tmp_ctx.name
 
         prev_cwd = os.getcwd()
         try:
@@ -1273,9 +1274,9 @@ class SegmenterTreeLearn:
                     return None, None
                 result_path = candidates[0]
 
-            data = np.load(result_path, allow_pickle=True)
-            coords = np.asarray(data["points"], dtype=np.float64)
-            instance_preds = np.asarray(data["labels"]).copy()
+            with np.load(result_path, allow_pickle=True) as data:
+                coords = np.asarray(data["points"], dtype=np.float64)
+                instance_preds = np.asarray(data["labels"]).copy()
             # Remap TreeLearn 0 (non-tree) → ecomodel -1
             instance_preds[instance_preds == 0] = -1
 
@@ -1318,10 +1319,29 @@ class SegmenterTreeLearn:
             except Exception:
                 pass
             if _tmp_ctx is not None:
+                _remove_tree_retry(work_dir)
                 try:
                     _tmp_ctx.cleanup()
                 except Exception:
                     pass
+                if os.path.exists(work_dir):
+                    print(f"[SegmenterTreeLearn] warning: could not delete work dir {work_dir}")
+
+
+def _remove_tree_retry(path, attempts=5):
+    """rmtree that survives Windows' delayed handle release (open memmaps / npz files)."""
+    import gc
+    import shutil
+    import time
+
+    for i in range(attempts):
+        if not os.path.exists(path):
+            return
+        gc.collect()
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            return
+        time.sleep(0.5 * (i + 1))
 
 
 class SegmenterTreeX:

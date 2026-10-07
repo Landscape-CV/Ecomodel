@@ -22,6 +22,11 @@ export const SHORTCUTS = [
   ["H", "Hide non-tree points"],
   ["C", "Toggle instance / wood-leaf colors"],
   ["F", "Frame selection, focused tree, or everything"],
+  ["D", "Drop ground points from the selection (height in the View panel)"],
+  ["← / →", "Orbit the view left / right (hold)"],
+  ["↑ / ↓", "Tilt the view up / down (hold)"],
+  ["Shift + arrows", "Pan the view"],
+  ["W / S  or  PgUp / PgDn", "Zoom in / out (hold)"],
   ["- / =", "Shrink / grow brush radius"],
   ["Ctrl+Z / Ctrl+Y", "Undo / redo"],
   ["Ctrl+S", "Save"],
@@ -35,7 +40,21 @@ export function showHelp() {
   return modal({ title: "Keyboard shortcuts", body: grid, buttons: [{ label: "Close", value: true, primary: true }] });
 }
 
+const ARROWS = { ArrowLeft: ["orbitL", "panL"], ArrowRight: ["orbitR", "panR"], ArrowUp: ["tiltU", "panU"], ArrowDown: ["tiltD", "panD"] };
+const ZOOM = { w: "zoomIn", W: "zoomIn", PageUp: "zoomIn", s: "zoomOut", S: "zoomOut", PageDown: "zoomOut" };
+
+// Map a key to the camera move it drives (Shift turns arrows into panning), or null.
+function navMove(e) {
+  if (ARROWS[e.key]) return ARROWS[e.key][e.shiftKey ? 1 : 0];
+  return ZOOM[e.key] || null;
+}
+
 export function initShortcuts(h) {
+  const held = new Map();   // key -> move, so releasing Shift mid-pan still stops the right move
+  const release = (key) => { if (held.has(key)) { h.nav(held.get(key), false); held.delete(key); } };
+  document.addEventListener("keyup", (e) => release(e.key.length === 1 ? e.key.toLowerCase() : e.key));
+  window.addEventListener("blur", () => { for (const k of [...held.keys()]) release(k); });
+
   document.addEventListener("keydown", (e) => {
     if (isModalOpen()) return;
     const t = e.target;
@@ -45,6 +64,13 @@ export function initShortcuts(h) {
     }
     const ctrl = e.ctrlKey || e.metaKey;
     const k = e.key;
+    const move = !ctrl && !e.altKey ? navMove(e) : null;
+    if (move) {
+      const key = k.length === 1 ? k.toLowerCase() : k;
+      if (held.get(key) !== move) { release(key); held.set(key, move); h.nav(move, true); }
+      e.preventDefault();
+      return;
+    }
     let handled = true;
     if (ctrl && (k === "z" || k === "Z")) e.shiftKey ? h.redo() : h.undo();
     else if (ctrl && (k === "y" || k === "Y")) h.redo();
@@ -59,6 +85,7 @@ export function initShortcuts(h) {
     else if (k === "m" || k === "M") h.act("merge");
     else if (k === "Delete" || k === "Backspace") h.act("nontree");
     else if (k === "g" || k === "G") h.act("grow");
+    else if (k === "d" || k === "D") h.act("ground");
     else if (k === "Escape") h.act("clear");
     else if (k === "t" || k === "T") h.selectFocused();
     else if (k === "[") h.step(-1);
