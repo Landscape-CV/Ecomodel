@@ -12,6 +12,7 @@ import {
 import { initShortcuts, showHelp } from "./shortcuts.js";
 import { modal, confirmDialog, toast, el, busyStart, setProgress, fmtElapsed } from "./ui.js";
 import { Island } from "./island.js";
+import { dropGroundFromSelection } from "./ground.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -87,7 +88,20 @@ function updateChrome() {
   $("btn-wl-run").disabled = !loaded || state.busy;
   $("btn-seg-run").disabled = !loaded || state.busy;
   const noSel = state.selCount === 0;
-  for (const b of document.querySelectorAll(".act")) b.disabled = !loaded || noSel;
+  if (mode === "island") {
+    const focused = state.focusedTree !== null;
+    for (const b of document.querySelectorAll(".act")) {
+      const whole = ["merge", "assign", "nontree"].includes(b.dataset.act);
+      b.disabled = state.busy || (whole ? !focused : b.dataset.act === "clear");
+      b.dataset.title ??= b.title;
+      b.title = whole ? "Island view: acts on the focused tree in every tile" : "Island view: opens an edit region first";
+    }
+  } else {
+    for (const b of document.querySelectorAll(".act")) {
+      b.disabled = !loaded || noSel;
+      if (b.dataset.title !== undefined) b.title = b.dataset.title;
+    }
+  }
   $("hud-sel").textContent = `Selected: ${state.selCount.toLocaleString()} display pts`;
   const as = info.autosave;
   $("autosave-label").textContent = loaded
@@ -119,6 +133,7 @@ function refreshTreesSoon() {
 // ── loading ──────────────────────────────────────────────────────────────
 // Drop the single-cloud / region data from the client (the island layer stays).
 function resetSingle() {
+  tools.setTool("navigate");
   viewer.clearCloud();
   state.info = { loaded: false, origin: island.project?.origin };
   state.positions = null;
@@ -404,11 +419,39 @@ const ACTIONS = {
   async clear() { clearSelection(); },
 };
 
+async function pickTool(t) {
+  if (t !== "navigate" && state.mode === "island" && !(await island.ensureRegion())) return;
+  if (state.info.loaded || t === "navigate") tools.setTool(t);
+}
+
 function runAction(name) {
+  if (state.mode === "island") { islandAction(name); return; }
   if (!state.info.loaded) return;
   if (name === "clear") { clearSelection(); return; }
   if (state.selCount === 0) { toast("Nothing selected. Click a tree, or use Lasso (L) / Box (B) / Brush (R).", "warn"); return; }
+  if (name === "ground") { dropGround(); return; }
   guarded(() => ACTIONS[name]());
+}
+
+function dropGround() {
+  const h = Math.max(0.02, Number($("ground-h").value) || 0.3);
+  const before = state.selCount;
+  const n = dropGroundFromSelection(h);
+  viewer.selectionChanged();
+  toast(n ? `Dropped ${n.toLocaleString()} ground points (< ${h} m above ground); ${state.selCount.toLocaleString()} of ${before.toLocaleString()} left`
+    : `No selected points within ${h} m of the ground.`, n ? "success" : "info");
+}
+
+// Island view (no region): whole-tree edits act on the focused tree across tiles; point-level
+// edits first open an edit region.
+function islandAction(name) {
+  if (name === "merge" || name === "assign") { island.mergeFocused(); return; }
+  if (name === "nontree") { island.nontreeFocused(); return; }
+  if (name === "new" || name === "grow" || name === "ground") {
+    island.ensureRegion().then((ok) => {
+      if (ok) toast("Region open. Select points with Lasso (L) / Box (B) / Brush (R), then press the action again.", "info");
+    }).catch(errorToast);
+  }
 }
 
 async function undoRedo(which) {
@@ -573,7 +616,7 @@ initTabs();
 initTreeTable();
 initExport(() => save());
 
-for (const b of document.querySelectorAll(".tool")) b.addEventListener("click", () => tools.setTool(b.dataset.tool));
+for (const b of document.querySelectorAll(".tool")) b.addEventListener("click", () => pickTool(b.dataset.tool).catch(errorToast));
 for (const b of document.querySelectorAll(".act")) b.addEventListener("click", () => runAction(b.dataset.act));
 $("btn-open").addEventListener("click", openDialog);
 $("btn-open-empty").addEventListener("click", openDialog);
@@ -615,7 +658,8 @@ initShortcuts({
   undo: () => undoRedo("undo"),
   redo: () => undoRedo("redo"),
   save: () => save(),
-  tool: (t) => { if (state.info.loaded) tools.setTool(t); },
+  tool: (t) => { pickTool(t).catch(errorToast); },
+  nav: (move, down) => viewer.navKey(move, down),
   act: runAction,
   selectFocused: () => { if (state.focusedTree !== null) { selectTree(state.focusedTree); viewer.selectionChanged(); } },
   step: stepTree,

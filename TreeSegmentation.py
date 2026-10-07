@@ -219,16 +219,17 @@ def segment_point_cloud(tile, max_dist = .16, base_height = .3, layer_size =.3, 
         tile.numpy()
         return
     print("Connect Segments")
-    segments,not_explored = connect_segments(pcd_tree,pcd,segments,full_not_explored,filtered_tree_bases,max_dist*2,network,False,True)#Shortest Path to lowest point of tree
+    dist_cache = BaseDistanceCache(network)
+    segments,not_explored = connect_segments(pcd_tree,pcd,segments,full_not_explored,filtered_tree_bases,max_dist*2,network,False,True,dist_cache=dist_cache)#Shortest Path to lowest point of tree
     
     
     if connect_using_midpoint:
         print("Connect More Segments")
-        segments,not_explored = connect_segments(pcd_tree,pcd,segments,not_explored,filtered_tree_bases,max_dist,network,False,False)#Shortest path to average point of tree
+        segments,not_explored = connect_segments(pcd_tree,pcd,segments,not_explored,filtered_tree_bases,max_dist,network,False,False,dist_cache=dist_cache)#Shortest path to average point of tree
     
     if connect_ambiguous_points:
         print("Connect Final Segments")
-        segments,not_explored = connect_segments(pcd_tree,pcd,segments,not_explored,filtered_tree_bases,max_dist,network,True,True)#Shortest path to min point of tree -- allow connections to clusters that are not adjacent to assigned
+        segments,not_explored = connect_segments(pcd_tree,pcd,segments,not_explored,filtered_tree_bases,max_dist,network,True,True,dist_cache=dist_cache)#Shortest path to min point of tree -- allow connections to clusters that are not adjacent to assigned
     if fix_overlapping_segments:
         print("Fix Overlap")
         segments = fix_overlap(segments,center_points,network)
@@ -353,8 +354,37 @@ def make_edges(source,target):
     for node in target:
         edges.append((source,node))
     return edges
+class BaseDistanceCache:
+    """Weighted shortest-path distances from tree-base points to every graph node.
+
+    The graph is undirected, so dist(node, base) == dist(base, node): one Dijkstra per base point
+    (computed on first use) replaces one Dijkstra per queried node. Rows are float32 and kept in
+    LRU order under a memory budget.
+    """
+
+    def __init__(self, network, budget_bytes=3 * 1024**3):
+        self.network = network
+        self.n = network.vcount()
+        self.max_rows = max(8, int(budget_bytes // max(4 * self.n, 1)))
+        self.rows = {}
+
+    def _row(self, src):
+        src = int(src)
+        r = self.rows.pop(src, None)
+        if r is None:
+            r = np.asarray(self.network.distances(source=[src], weights="weight")[0], dtype=np.float32)
+            if len(self.rows) >= self.max_rows:
+                self.rows.pop(next(iter(self.rows)))
+        self.rows[src] = r
+        return r
+
+    def distances(self, node, base_points):
+        """Distances from `node` to each of `base_points` (inf where unreachable)."""
+        return np.array([self._row(b)[node] for b in base_points], dtype=np.float64)
+
+
 # @numba.jit(forceobj=True)
-def connect_segments(pcd_tree,pcd,segments,not_explored,tree_bases,max_dist,network,search_non_connecting,min_point=False):
+def connect_segments(pcd_tree,pcd,segments,not_explored,tree_bases,max_dist,network,search_non_connecting,min_point=False,dist_cache=None):
     """Connects clusters to tree bases utilizing shortest path to base point
 
     Args:
@@ -388,6 +418,9 @@ def connect_segments(pcd_tree,pcd,segments,not_explored,tree_bases,max_dist,netw
 
     tree_base_points=np.array(tree_base_points,dtype=int)
     tree_bases=np.array(tree_bases,dtype = int)
+    if dist_cache is None:
+        dist_cache = BaseDistanceCache(network)
+    tree_base_xyz = point_data[tree_base_points] if len(tree_base_points) else np.zeros((0, 3))
     
 
     # Fix: replace O(N^2) np.min(np.where(not_explored)) with a monotonic pointer.
@@ -439,9 +472,9 @@ def connect_segments(pcd_tree,pcd,segments,not_explored,tree_bases,max_dist,netw
                     not_expanded[base]=True
                     continue
                 else:
-                    euc_dist = np.sqrt(np.array([(pcd.points[idx]- pcd.points[base])**2 for idx in tree_base_points]).sum(axis=1))
+                    euc_dist = np.sqrt(((tree_base_xyz - point_data[base])**2).sum(axis=1))
                     top = np.argsort(euc_dist)[:2]#Only consider two closest bases to avoid connecting across large distances
-                    path_dist=np.array(network.distances(base,tree_base_points[top],weights='weight'))[0]
+                    path_dist=dist_cache.distances(base,tree_base_points[top])
                     if np.min(path_dist)==np.inf:
                         not_expanded[base]=True
                         continue
@@ -453,7 +486,7 @@ def connect_segments(pcd_tree,pcd,segments,not_explored,tree_bases,max_dist,netw
 
                 # euc_dist = np.sqrt(np.array([(pcd.points[idx]- pcd.points[base])**2 for idx in base_idx]).sum(axis=1))
                 # base_seg=tree_base_seg[np.argmin(euc_dist)]
-                path_dist=np.array(network.distances(base,tree_base_points[base_idx],weights='weight'))[0]
+                path_dist=dist_cache.distances(base,tree_base_points[base_idx])
                 base_seg=tree_base_seg[np.argmin(path_dist)]
             # for seg in segs:
             #     if seg not in tree_bases:

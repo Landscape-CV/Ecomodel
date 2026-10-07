@@ -305,6 +305,54 @@ export class Viewer {
 
   frameAll() { this.frameBox(this.bounds); }
 
+  // Held-key camera moves: "orbitL/R", "tiltU/D", "panL/R/U/D", "zoomIn/Out".
+  navKey(move, down) {
+    this._nav ??= new Set();
+    if (down) this._nav.add(move); else this._nav.delete(move);
+    if (down && !this._navRaf) {
+      this._navT = performance.now();
+      const step = (now) => {
+        const dt = Math.min(0.05, Math.max(0, (now - this._navT) / 1000));
+        this._navT = now;
+        this._navStep(dt);
+        this._navRaf = this._nav.size ? requestAnimationFrame(step) : 0;
+      };
+      this._navRaf = requestAnimationFrame(step);
+    }
+  }
+
+  navStop() { this._nav?.clear(); }
+
+  _navStep(dt) {
+    const m = this._nav, cam = this.camera, tgt = this.controls.target;
+    const offset = cam.position.clone().sub(tgt);
+    const dist = offset.length();
+    const Z = new THREE.Vector3(0, 0, 1);
+    const orbit = ((m.has("orbitL") ? 1 : 0) - (m.has("orbitR") ? 1 : 0)) * 1.6 * dt;
+    if (orbit) offset.applyAxisAngle(Z, orbit);
+    const tilt = ((m.has("tiltD") ? 1 : 0) - (m.has("tiltU") ? 1 : 0)) * 1.1 * dt;
+    if (tilt) {
+      const polar = Math.acos(THREE.MathUtils.clamp(offset.z / dist, -1, 1));
+      const next = THREE.MathUtils.clamp(polar + tilt, 0.02, Math.PI - 0.02);
+      const axis = new THREE.Vector3().crossVectors(Z, offset).normalize();
+      if (axis.lengthSq() > 0) offset.applyAxisAngle(axis, next - polar);
+    }
+    const zoom = (m.has("zoomOut") ? 1 : 0) - (m.has("zoomIn") ? 1 : 0);
+    if (zoom) offset.multiplyScalar(Math.max(Math.exp(zoom * 1.5 * dt), 0.05 / dist));
+    const px = (m.has("panR") ? 1 : 0) - (m.has("panL") ? 1 : 0);
+    const py = (m.has("panU") ? 1 : 0) - (m.has("panD") ? 1 : 0);
+    if (px || py) {
+      cam.updateMatrix();
+      const right = new THREE.Vector3().setFromMatrixColumn(cam.matrix, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(cam.matrix, 1);
+      const d = right.multiplyScalar(px).add(up.multiplyScalar(py)).multiplyScalar(0.8 * dist * dt);
+      tgt.add(d);
+    }
+    cam.position.copy(tgt).add(offset);
+    this.controls.update();
+    this._camChanged();
+  }
+
   // Left button behaviour: orbit in navigate mode; tools take left, right orbits, middle pans.
   setToolMode(isTool) {
     const M = THREE.MOUSE;

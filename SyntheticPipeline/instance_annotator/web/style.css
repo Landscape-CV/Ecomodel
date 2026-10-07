@@ -126,6 +126,10 @@ body.booting #viewport::after {
 .pre { white-space: pre-line; }
 #island-summary { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 #pane-island .row { flex-wrap: wrap; }
+.box-edit { display: flex; flex-direction: column; gap: 4px; }
+.box-edit > label { display: grid; grid-template-columns: 78px 1fr 98px auto; align-items: center; gap: 6px; color: var(--muted); }
+.box-edit input[type=range] { width: 100%; min-width: 0; }
+.box-edit input[type=number] { width: 98px; }
 #pane-island, #pane-export { overflow-x: hidden; }
 .cand-list { display: flex; flex-direction: column; gap: 3px; }
 .cand { display: flex; align-items: center; gap: 6px; padding: 2px 0; border-top: 1px solid #262a33; }
