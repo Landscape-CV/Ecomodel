@@ -62,7 +62,19 @@ def main(argv=None) -> None:
     ap.add_argument("--max_display", type=int, default=None, help="Display LOD point cap")
     ap.add_argument("--no_browser", action="store_true")
     ap.add_argument("--project", default="", help="Island project folder to open on start")
+    ap.add_argument("--pointsam_ckpt", default="",
+                    help="Point-SAM weights for the pointsam method (e.g. pointsam_checkpoints/decoder_ft/best.safetensors)")
     args = ap.parse_args(argv)
+
+    if args.pointsam_ckpt:
+        from pathlib import Path
+        from .. import segment
+
+        ckpt = Path(args.pointsam_ckpt).expanduser().resolve()
+        if not ckpt.is_file():
+            ap.error(f"--pointsam_ckpt not found: {ckpt}")
+        segment._DEFAULT_POINTSAM = str(ckpt)
+        print(f"Point-SAM weights: {ckpt}")
 
     if args.project:
         info = project_routes.psession.open(args.project)
