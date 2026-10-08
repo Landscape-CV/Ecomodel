@@ -17,7 +17,7 @@ for p in (str(_ROOT), str(_SP_DIR)):
 METHODS = ("scanline", "treelearn", "treex", "tls2trees", "pointsam")
 
 _DEFAULT_TREELEARN = str(_ROOT / "TreeLearn" / "configs" / "pipeline" / "ecomodel.yaml")
-_DEFAULT_POINTSAM = str(
+_DEFAULT_POINTSAM = os.environ.get("POINTSAM_CKPT") or str(
     _ROOT / "thirdparty" / "checkpoints" / "point_sam" / "model.safetensors"
 )
 
