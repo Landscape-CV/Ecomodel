@@ -17,9 +17,37 @@ for p in (str(_ROOT), str(_SP_DIR)):
 METHODS = ("scanline", "treelearn", "treex", "tls2trees", "pointsam")
 
 _DEFAULT_TREELEARN = str(_ROOT / "TreeLearn" / "configs" / "pipeline" / "ecomodel.yaml")
-_DEFAULT_POINTSAM = os.environ.get("POINTSAM_CKPT") or str(
-    _ROOT / "thirdparty" / "checkpoints" / "point_sam" / "model.safetensors"
-)
+_STOCK_POINTSAM = str(_ROOT / "thirdparty" / "checkpoints" / "point_sam" / "model.safetensors")
+_DEFAULT_POINTSAM = os.environ.get("POINTSAM_CKPT") or _STOCK_POINTSAM
+_POINTSAM_FT_DIR = _SP_DIR / "pointsam_checkpoints"
+
+
+def pointsam_weights() -> list:
+    """Selectable Point-SAM checkpoints: [{"path", "label"}], default first."""
+    found = []
+    if os.path.isfile(_STOCK_POINTSAM):
+        found.append((_STOCK_POINTSAM, "Stock Point-SAM (large)"))
+    if _POINTSAM_FT_DIR.is_dir():
+        files = sorted(_POINTSAM_FT_DIR.glob("*/*.safetensors"),
+                       key=lambda f: (f.parent.name.startswith("_"), f.parent.name, f.stem != "best", f.stem))
+        found += [(str(f), f"Fine-tuned {f.parent.name} / {f.stem}") for f in files]
+    if os.path.isfile(_DEFAULT_POINTSAM) and all(os.path.normcase(p) != os.path.normcase(_DEFAULT_POINTSAM)
+                                                 for p, _ in found):
+        found.append((_DEFAULT_POINTSAM, f"Custom: {Path(_DEFAULT_POINTSAM).name}"))
+    default = os.path.normcase(os.path.abspath(_DEFAULT_POINTSAM))
+    found.sort(key=lambda x: os.path.normcase(os.path.abspath(x[0])) != default)
+    return [{"path": p, "label": lab} for p, lab in found]
+
+
+def resolve_pointsam(path: Optional[str]) -> Optional[str]:
+    """Validate a requested checkpoint against pointsam_weights(); None -> default."""
+    if not path:
+        return None
+    want = os.path.normcase(os.path.abspath(path))
+    for w in pointsam_weights():
+        if os.path.normcase(os.path.abspath(w["path"])) == want:
+            return w["path"]
+    raise ValueError(f"Unknown Point-SAM checkpoint: {path}")
 
 
 def default_ckpt_kwargs(

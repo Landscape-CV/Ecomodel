@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+import zlib
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -105,13 +106,13 @@ def _box_dist(xy: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
     return np.hypot(d[:, 0], d[:, 1])
 
 
-def default_runner(method: str, leaf_removal: bool, results_folder: str):
+def default_runner(method: str, leaf_removal: bool, results_folder: str, pointsam_ckpt: Optional[str] = None):
     """Runner taking (xyz, intensity01, seed voxel); the voxel picks TreeX's parameter set."""
     from ..segment import run_method
 
     def run(xyz: np.ndarray, inten01: np.ndarray, voxel: float) -> np.ndarray:
         lab, info = run_method(xyz, inten01, method, leaf_removal=leaf_removal, results_folder=results_folder,
-                               treex_stock_tls=voxel <= TREEX_STOCK_MAX_VOXEL)
+                               treex_stock_tls=voxel <= TREEX_STOCK_MAX_VOXEL, pointsam_ckpt=pointsam_ckpt)
         if not info.get("ok"):
             raise RuntimeError(f"{method} failed: {info.get('message', '')}")
         return lab
@@ -148,7 +149,8 @@ def segment_island(project: Project | str, method: str = "treelearn", *, buffer:
                    voxel: Optional[float] = None, max_seeds: Optional[int] = None,
                    tile_names: Optional[Sequence[str]] = None, leaf_removal: bool = False,
                    progress: Progress = None, log: Callable[[str], None] = print,
-                   runner: Optional[Runner] = None, reuse_cache: bool = False) -> Dict:
+                   runner: Optional[Runner] = None, reuse_cache: bool = False,
+                   pointsam_ckpt: Optional[str] = None) -> Dict:
     proj = project if isinstance(project, Project) else Project(project)
     names = [t["name"] for t in proj.tiles]
     if tile_names:
@@ -167,7 +169,7 @@ def segment_island(project: Project | str, method: str = "treelearn", *, buffer:
     voxel = float(voxel or md["voxel"])
     max_seeds = int(max_seeds or md["max_seeds"])
     if runner is None:
-        run = default_runner(method, leaf_removal, str(cache / "work"))
+        run = default_runner(method, leaf_removal, str(cache / "work"), pointsam_ckpt)
     else:
         run = lambda xyz, inten, _vox: runner(xyz, inten)  # noqa: E731
     prog = progress or (lambda d, t, m: None)
@@ -181,7 +183,7 @@ def segment_island(project: Project | str, method: str = "treelearn", *, buffer:
         lo, hi = proj.tile_bounds_xy(t)
         f = cache / f"{name}.npz"
         prog(k, n_steps, f"Segmenting tile {k + 1}/{len(targets)} ({name})")
-        params = np.array([voxel, buffer, float(leaf_removal)])
+        params = np.array([voxel, buffer, float(leaf_removal), float(zlib.crc32(str(pointsam_ckpt or "").encode()))])
         if reuse_cache and f.exists() and _cache_matches(f, params):
             log(f"[segment] {name}: cached")
         else:
@@ -367,6 +369,7 @@ def segment_island(project: Project | str, method: str = "treelearn", *, buffer:
         save_candidates(proj, cands)
     proj.meta["reviewed"] = []
     proj.meta["segmentation"] = {"method": method, "buffer": buffer, "voxel": voxel,
+                                 **({"pointsam_ckpt": pointsam_ckpt} if pointsam_ckpt else {}),
                                  "tiles": [names[t] for t in targets], "trees": K,
                                  "date": time.strftime("%Y-%m-%d %H:%M:%S")}
     proj.save_meta()

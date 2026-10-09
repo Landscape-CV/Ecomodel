@@ -45,6 +45,7 @@ def main(argv=None) -> int:
     s.add_argument("--tiles", default="", help="Comma-separated tile names (default all)")
     s.add_argument("--leaf_removal", action="store_true")
     s.add_argument("--reuse_cache", action="store_true", help="Reuse per-tile results in seg_cache/")
+    s.add_argument("--pointsam_ckpt", default="", help="Point-SAM weights (.safetensors) for --method pointsam")
 
     st = sub.add_parser("stitch", help="Find (and optionally apply) merges across tile borders")
     st.add_argument("project")
@@ -76,7 +77,8 @@ def main(argv=None) -> int:
 
         tiles = [t for t in a.tiles.split(",") if t] or None
         segment_island(a.project, a.method, buffer=a.buffer, voxel=a.voxel, max_seeds=a.max_seeds,
-                       tile_names=tiles, leaf_removal=a.leaf_removal, reuse_cache=a.reuse_cache)
+                       tile_names=tiles, leaf_removal=a.leaf_removal, reuse_cache=a.reuse_cache,
+                       pointsam_ckpt=str(Path(a.pointsam_ckpt).resolve()) if a.pointsam_ckpt else None)
     elif a.cmd == "stitch":
         from .stitch import apply_candidates, find_candidates
         from .store import Project

@@ -4,7 +4,7 @@ import * as THREE from "three";
 import { state, emit, on, registerTreeIds, resetColorSlots, cssColor } from "./state.js";
 import { getJSON, postJSON } from "./api.js";
 import { OctreeLayer } from "./octree.js";
-import { renderTrees, showTab } from "./panels.js";
+import { renderTrees, showTab, initPointSamSelect } from "./panels.js";
 import { el, toast, confirmDialog, modal } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
@@ -536,13 +536,14 @@ export class Island {
     $("btn-iexp-run").addEventListener("click", () => this.runExport());
   }
 
-  initMethods(methods) {
+  initMethods(methods, weights) {
     const sel = $("iseg-method");
     sel.replaceChildren(...methods.map((m) => el("option", { value: m, text: m })));
     if (methods.includes("treelearn")) sel.value = "treelearn";
     const syncVoxel = () => { $("iseg-voxel").value = sel.value === "treex" ? "0.03" : "0.05"; };
     sel.addEventListener("change", syncVoxel);
     syncVoxel();
+    this._pointsamCkpt = initPointSamSelect($("iseg-ps"), sel, weights);
   }
 
   updateChrome() {
@@ -575,7 +576,7 @@ export class Island {
     if (!ok) return;
     const body = {
       method, buffer: Number($("iseg-buffer").value) || 10, voxel: Number($("iseg-voxel").value) || null,
-      leaf_removal: $("iseg-leaf").checked,
+      leaf_removal: $("iseg-leaf").checked, pointsam_ckpt: this._pointsamCkpt?.() ?? null,
     };
     await this.hooks.runJob("/api/island/segment", body, `Island segmentation (${method})`, "iseg", async (done) => {
       this.project = await getJSON("/api/project/status");

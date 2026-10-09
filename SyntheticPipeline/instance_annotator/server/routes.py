@@ -64,6 +64,7 @@ class SegmentReq(BaseModel):
     method: str
     leaf_removal: bool = False
     treex_stock: bool = True
+    pointsam_ckpt: Optional[str] = None
 
 
 class WoodLeafReq(BaseModel):
@@ -277,12 +278,16 @@ def save(req: SaveReq):
 
 @router.post("/segment")
 def segment(req: SegmentReq):
-    from ..segment import METHODS
+    from ..segment import METHODS, resolve_pointsam
 
     if req.method not in METHODS:
         return JSONResponse({"error": f"Unknown method {req.method}"}, status_code=400)
     try:
-        return session.run_segmentation(req.method, req.leaf_removal, req.treex_stock).to_dict()
+        ckpt = resolve_pointsam(req.pointsam_ckpt)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    try:
+        return session.run_segmentation(req.method, req.leaf_removal, req.treex_stock, pointsam_ckpt=ckpt).to_dict()
     except SessionError as exc:
         return _err(exc)
 
@@ -312,7 +317,8 @@ def job(job_id: str):
 
 @router.get("/methods")
 def methods():
-    from ..segment import METHODS as SEG
+    from ..segment import METHODS as SEG, pointsam_weights
     from ..wood_leaf import METHODS as WL
 
-    return {"segment": list(SEG), "woodleaf": list(WL), "woodleaf_needs_intensity": list(INTENSITY_WOOD_LEAF)}
+    return {"segment": list(SEG), "woodleaf": list(WL), "woodleaf_needs_intensity": list(INTENSITY_WOOD_LEAF),
+            "pointsam_weights": pointsam_weights()}

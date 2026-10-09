@@ -85,7 +85,7 @@ Runs a benchmark instance method in the background and replaces all labels (undo
 | Method | Notes |
 |--------|--------|
 | `treelearn` | Needs TreeLearn weights + CUDA for speed. Config: `TreeLearn/configs/pipeline/ecomodel.yaml`. |
-| `pointsam` | Needs `thirdparty/checkpoints/point_sam/model.safetensors`. Auto prompts only. |
+| `pointsam` | Auto prompts only. A **Point-SAM weights** dropdown (Segment tab and island segmentation) lists the stock `thirdparty/checkpoints/point_sam/model.safetensors` and every fine-tuned `SyntheticPipeline/pointsam_checkpoints/*/{best,last}.safetensors`; `--pointsam_ckpt` on the server sets the preselected default. |
 | `treex` | Stock `TreeXPresetTLS` when "TreeX stock TLS settings" is checked. |
 | `tls2trees` | In-process port; RGI semantic unless leaf removal already ran. |
 | `scanline` | Classic Ecomodel stem graph; often finds few stems on 0.1 m voxels. |
