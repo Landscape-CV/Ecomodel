@@ -618,14 +618,15 @@ class Session:
             raise SessionError("Another job is already running.", 409)
         return start_background_job(self.jobs, kind, fn)
 
-    def run_segmentation(self, method: str, leaf_removal: bool, treex_stock: bool) -> Job:
+    def run_segmentation(self, method: str, leaf_removal: bool, treex_stock: bool,
+                         pointsam_ckpt: Optional[str] = None) -> Job:
         from ..segment import run_method
 
         def work(job: Job) -> None:
             job.stage(f"Running {method} on {len(self.xyz):,} points")
             lab, info = run_method(
                 self.xyz, self.intensity, method,
-                leaf_removal=leaf_removal, treex_stock_tls=treex_stock,
+                leaf_removal=leaf_removal, treex_stock_tls=treex_stock, pointsam_ckpt=pointsam_ckpt,
                 results_folder=str(WORKDIR),
             )
             job.result = {"info": {k: v for k, v in info.items() if isinstance(v, (int, float, str, bool))}}

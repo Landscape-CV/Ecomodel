@@ -57,6 +57,7 @@ class IslandSegReq(BaseModel):
     voxel: Optional[float] = None
     leaf_removal: bool = False
     tiles: Optional[List[str]] = None
+    pointsam_ckpt: Optional[str] = None
 
 
 class ExportReq(BaseModel):
@@ -210,10 +211,14 @@ def region_close():
 @router.post("/island/segment")
 def island_segment(req: IslandSegReq):
     from ..project.segment_island import segment_island
-    from ..segment import METHODS
+    from ..segment import METHODS, resolve_pointsam
 
     if req.method not in METHODS:
         return JSONResponse({"error": f"Unknown method {req.method}"}, status_code=400)
+    try:
+        ckpt = resolve_pointsam(req.pointsam_ckpt) if req.method == "pointsam" else None
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     try:
         p = psession.require()
 
@@ -222,7 +227,7 @@ def island_segment(req: IslandSegReq):
                 job.stage(msg, done / max(total, 1))
 
             summary = segment_island(p, req.method, buffer=req.buffer, voxel=req.voxel,
-                                     leaf_removal=req.leaf_removal, tile_names=req.tiles,
+                                     leaf_removal=req.leaf_removal, tile_names=req.tiles, pointsam_ckpt=ckpt,
                                      progress=progress, log=lambda s: print(s, flush=True))
             job.stage("Refreshing tree stats", None)
             psession.after_bulk_change()

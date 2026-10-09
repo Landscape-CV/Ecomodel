@@ -226,15 +226,25 @@ export function setWoodLeafAvailability(hasIntensity) {
 }
 
 // ── segmentation ─────────────────────────────────────────────────────────
-export function initSegment(methods, run) {
+/** Fill a Point-SAM weights <select>; it is only shown while `methodSel` is "pointsam". */
+export function initPointSamSelect(psSel, methodSel, weights) {
+  psSel.replaceChildren(...(weights || []).map((w) => el("option", { value: w.path, text: w.label, title: w.path })));
+  const sync = () => psSel.closest("label").classList.toggle("hidden", methodSel.value !== "pointsam");
+  methodSel.addEventListener("change", sync);
+  sync();
+  return () => (methodSel.value === "pointsam" && psSel.value) || null;
+}
+
+export function initSegment(methods, weights, run) {
   const sel = $("seg-method");
   sel.replaceChildren(...methods.map((m) => el("option", { value: m, text: m })));
   if (methods.includes("treelearn")) sel.value = "treelearn";
   const syncOptions = () => $("seg-treex").closest("label").classList.toggle("hidden", sel.value !== "treex");
   sel.addEventListener("change", syncOptions);
   syncOptions();
+  const ckpt = initPointSamSelect($("seg-ps"), sel, weights);
   $("btn-seg-run").addEventListener("click", () =>
-    run(sel.value, $("seg-leaf").checked, $("seg-treex").checked));
+    run(sel.value, $("seg-leaf").checked, $("seg-treex").checked, ckpt()));
 }
 
 // ── export ───────────────────────────────────────────────────────────────
