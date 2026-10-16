@@ -205,6 +205,31 @@ def test_import_and_stitch_merges_split_tree(island):
     p.close()
 
 
+def test_fragments_merges_split_crown(island):
+    from instance_annotator.project.fragments import find_fragment_candidates
+
+    p = Project(island["proj"])
+    marked = {}
+    for t, tile in enumerate(p.tiles):
+        loc = _local_truth(island, tile["name"]) - ORIGIN
+        tree1 = np.hypot(loc[:, 0] - 6.0, loc[:, 1] - 7.0) < 2.0
+        if not tree1.any():
+            continue
+        lab = p.labels(t)
+        stem, crown = tree1 & (loc[:, 2] < 8.5), tree1 & (loc[:, 2] >= 8.5)
+        lab[np.flatnonzero(stem)] = 500
+        lab[np.flatnonzero(crown)] = 501
+        marked[t] = tree1
+    p.flush()
+    assert marked
+    res = find_fragment_candidates(p, auto_apply=True, log=lambda s: None)
+    assert res["merged"] >= 1, res
+    for t, tree1 in marked.items():
+        vals = np.unique(np.asarray(p.labels(t))[tree1])
+        assert vals.tolist() == [500], vals
+    p.close()
+
+
 def test_region_write_through_and_island_undo(island):
     from instance_annotator.server.project_session import ProjectSession
 

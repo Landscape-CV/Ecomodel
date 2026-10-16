@@ -1,6 +1,6 @@
 // Annotator bootstrap: wires viewer, tools, panels, shortcuts and the API.
 import {
-  state, on, emit, selectedIndices, selectionLabelCounts, recountSelection, registerTreeIds, resetColorSlots,
+  state, on, emit, selectedIndices, selectionLabelCounts, recountSelection, registerTreeIds, resetColorSlots, cssColor,
 } from "./state.js";
 import { getJSON, postJSON, postBinary, getBinary, upload, pollJob, ApiError } from "./api.js";
 import { Viewer } from "./viewer.js";
@@ -584,10 +584,11 @@ async function runJob(url, body, label, pane, onDone) {
   }
 }
 
-async function runSegmentation(method, leafRemoval, treexStock, pointsamCkpt) {
+async function runSegmentation(method, leafRemoval, treexStock, pointsamCkpt, mergeFragments) {
   if (state.info.num_trees > 0 && !(await confirmDialog("Replace all labels?",
     `Running ${method} replaces the current ${state.info.num_trees} trees. You can undo it afterwards.`, "Run", true))) return;
-  const body = { method, leaf_removal: leafRemoval, treex_stock: treexStock, pointsam_ckpt: pointsamCkpt };
+  const body = { method, leaf_removal: leafRemoval, treex_stock: treexStock, pointsam_ckpt: pointsamCkpt,
+    merge_fragments: mergeFragments };
   await runJob("/api/segment", body, `Segmenting (${method})`, "seg", async (done) => {
     const labs = new Int32Array(await getBinary("/api/labels"));
     state.labels.set(labs);
@@ -596,8 +597,37 @@ async function runSegmentation(method, leafRemoval, treexStock, pointsamCkpt) {
     setFocus(null);
     state.info = await getJSON("/api/status");
     await refreshTrees();
+    segCandidates = done.result?.merge_candidates || [];
+    renderSegCandidates();
     toast(`Segmentation done: ${done.message}`, "success");
   });
+}
+
+// Pairs the split-tree merge was unsure about, from the last segmentation run.
+let segCandidates = [];
+function renderSegCandidates() {
+  const open = segCandidates.filter((c) => state.treeById.has(c.a) && state.treeById.has(c.b));
+  $("seg-cands-title").classList.toggle("hidden", !open.length);
+  $("seg-cand-count").textContent = open.length ? `${open.length} to review` : "";
+  const drop = (c) => { segCandidates = segCandidates.filter((x) => x !== c); renderSegCandidates(); };
+  $("seg-cands").replaceChildren(...open.slice(0, 200).map((c) => el("div", { class: "cand", title: c.reason },
+    el("span", { class: "swatch", style: `background:${cssColor(c.a)}` }),
+    el("span", { text: `${c.a} + ${c.b}` }),
+    el("span", { class: "muted", text: `${c.reason} · ${Number(c.score).toFixed(2)}` }),
+    el("span", { class: "spacer" }),
+    el("button", { class: "btn small", text: "Show", onclick: () => {
+      selectTree(c.a); selectTree(c.b, "add"); viewer.selectionChanged(); setFocus(c.a);
+    } }),
+    el("button", { class: "btn small primary", text: "Merge", disabled: state.busy, onclick: () => guarded(async () => {
+      selectTree(c.b);
+      const res = await editOp("merge", { target: c.a });
+      clearSelection();
+      setFocus(c.a);
+      drop(c);
+      toast(`Merged ${c.b} into ${c.a} (${res.changed_points.toLocaleString()} pts)`, "success");
+    }, "Merging...") }),
+    el("button", { class: "btn small", text: "Keep apart", onclick: () => drop(c) }),
+  )));
 }
 
 async function runWoodLeaf(method, params) {

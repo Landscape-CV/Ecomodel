@@ -106,12 +106,14 @@ def run_method(
     pointsam_ckpt: Optional[str] = None,
     results_folder: Optional[str] = None,
     propagate_radius: float = DEFAULT_PROPAGATE_RADIUS,
+    merge_fragments: bool = False,
 ) -> Tuple[np.ndarray, Dict]:
     """
     Run one instance method; return full-length labels (N,) and info dict.
 
     Points not covered by the segmenter stay -1. Labels are normalized to
-    trees >=0, non-tree -1.
+    trees >=0, non-tree -1. ``merge_fragments`` auto-merges split trees
+    (see merge_fragments.py); review candidates land in info["merge_candidates"].
     """
     method = method.strip().lower()
     if method not in METHODS:
@@ -176,6 +178,14 @@ def run_method(
         full = propagate_labels(xyz, oi, lab, radius=propagate_radius)
         info["propagated"] = True
         info["num_pred_points"] = int((full >= 0).sum())
+    if merge_fragments:
+        from .merge_fragments import merge_fragments as _merge
+
+        full, rep = _merge(xyz, full)
+        info["fragments_merged"] = rep["merged"]
+        info["merge_candidates"] = rep["candidates"]
     info["num_trees"] = int(len(np.unique(full[full >= 0])))
     info["message"] = f"trees={info['num_trees']} labeled_pts={info['num_pred_points']}"
+    if merge_fragments:
+        info["message"] += f" merged_fragments={info['fragments_merged']}"
     return full, info

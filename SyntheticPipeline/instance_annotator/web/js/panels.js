@@ -244,7 +244,7 @@ export function initSegment(methods, weights, run) {
   syncOptions();
   const ckpt = initPointSamSelect($("seg-ps"), sel, weights);
   $("btn-seg-run").addEventListener("click", () =>
-    run(sel.value, $("seg-leaf").checked, $("seg-treex").checked, ckpt()));
+    run(sel.value, $("seg-leaf").checked, $("seg-treex").checked, ckpt(), $("seg-merge").checked));
 }
 
 // ── export ───────────────────────────────────────────────────────────────

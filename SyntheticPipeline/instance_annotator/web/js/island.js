@@ -533,6 +533,7 @@ export class Island {
     $("btn-isl-close").addEventListener("click", () => this.hooks.guarded(() => this.leave(), "Closing project..."));
     $("btn-iseg-run").addEventListener("click", () => this.runSegment());
     $("btn-istitch-run").addEventListener("click", () => this.runStitch());
+    $("btn-ifrag-run").addEventListener("click", () => this.runFragments());
     $("btn-iexp-run").addEventListener("click", () => this.runExport());
   }
 
@@ -557,7 +558,7 @@ export class Island {
     $("btn-region-open").classList.toggle("hidden", region);
     $("btn-isl-merge").disabled = !island || busy || state.focusedTree === null;
     $("btn-isl-nontree").disabled = !island || busy || state.focusedTree === null;
-    for (const id of ["btn-iseg-run", "btn-istitch-run", "btn-iexp-run"]) $(id).disabled = !island || busy;
+    for (const id of ["btn-iseg-run", "btn-istitch-run", "btn-ifrag-run", "btn-iexp-run"]) $(id).disabled = !island || busy;
     $("island-export").classList.toggle("hidden", !this.active);
     $("single-export").classList.toggle("hidden", island);
     $("iexp-focused").disabled = state.focusedTree === null;
@@ -577,6 +578,7 @@ export class Island {
     const body = {
       method, buffer: Number($("iseg-buffer").value) || 10, voxel: Number($("iseg-voxel").value) || null,
       leaf_removal: $("iseg-leaf").checked, pointsam_ckpt: this._pointsamCkpt?.() ?? null,
+      merge_fragments: $("iseg-merge").checked,
     };
     await this.hooks.runJob("/api/island/segment", body, `Island segmentation (${method})`, "iseg", async (done) => {
       this.project = await getJSON("/api/project/status");
@@ -590,6 +592,20 @@ export class Island {
 
   async runStitch() {
     await this.hooks.runJob("/api/island/stitch", {}, "Finding border merges", "istitch", async (done) => {
+      await this.loadCandidates();
+      toast(done.message, "success");
+    });
+  }
+
+  async runFragments() {
+    const body = { auto_apply: $("ifrag-auto").checked };
+    await this.hooks.runJob("/api/island/fragments", body, "Finding split trees", "istitch", async (done) => {
+      if (done.result?.merged) {
+        this.project = await getJSON("/api/project/status");
+        this.hooks.setFocus(null);
+        await this.layer.refreshLabels(null);
+        await this.refreshTrees();
+      }
       await this.loadCandidates();
       toast(done.message, "success");
     });
@@ -622,7 +638,7 @@ export class Island {
     const rows = this.candidates.slice(0, 300).map((c) => el("div", { class: "cand" },
       el("span", { class: "swatch", style: `background:${cssColor(c.a)}` }),
       el("span", { text: `${c.a} + ${c.b}` }),
-      el("span", { class: "muted", text: `score ${Number(c.score).toFixed(2)}` }),
+      el("span", { class: "muted", title: c.reason || "", text: `${c.source === "fragments" ? (c.reason || "split") : "border"} · ${Number(c.score).toFixed(2)}` }),
       el("span", { class: "spacer" }),
       el("button", { class: "btn small", text: "Fly", onclick: () => this.flyToCandidate(c) }),
       el("button", { class: "btn small primary", text: "Merge", disabled: !island || state.busy, onclick: () => this.resolveCandidate(c, true) }),

@@ -619,7 +619,7 @@ class Session:
         return start_background_job(self.jobs, kind, fn)
 
     def run_segmentation(self, method: str, leaf_removal: bool, treex_stock: bool,
-                         pointsam_ckpt: Optional[str] = None) -> Job:
+                         pointsam_ckpt: Optional[str] = None, merge_fragments: bool = False) -> Job:
         from ..segment import run_method
 
         def work(job: Job) -> None:
@@ -627,9 +627,10 @@ class Session:
             lab, info = run_method(
                 self.xyz, self.intensity, method,
                 leaf_removal=leaf_removal, treex_stock_tls=treex_stock, pointsam_ckpt=pointsam_ckpt,
-                results_folder=str(WORKDIR),
+                results_folder=str(WORKDIR), merge_fragments=merge_fragments,
             )
             job.result = {"info": {k: v for k, v in info.items() if isinstance(v, (int, float, str, bool))}}
+            cands = info.get("merge_candidates") or []
             if not info.get("ok") or info.get("num_trees", 0) == 0:
                 reason = info.get("message") or "no trees found"
                 if info.get("ok"):
@@ -644,6 +645,9 @@ class Session:
                 first = self.link.allocate_ids(len(uniq))
                 lab = lab.copy()
                 lab[pos] = (inv + first).astype(np.int32)
+                new_id = {int(u): int(first + k) for k, u in enumerate(uniq)}
+                cands = [{**c, "a": new_id.get(c["a"], c["a"]), "b": new_id.get(c["b"], c["b"])} for c in cands]
+            job.result["merge_candidates"] = cands
             with self.lock:
                 self.editor.set_all(lab, record_undo=True)
                 if self.link is not None:

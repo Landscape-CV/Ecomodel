@@ -65,6 +65,7 @@ class SegmentReq(BaseModel):
     leaf_removal: bool = False
     treex_stock: bool = True
     pointsam_ckpt: Optional[str] = None
+    merge_fragments: bool = False
 
 
 class WoodLeafReq(BaseModel):
@@ -287,7 +288,8 @@ def segment(req: SegmentReq):
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     try:
-        return session.run_segmentation(req.method, req.leaf_removal, req.treex_stock, pointsam_ckpt=ckpt).to_dict()
+        return session.run_segmentation(req.method, req.leaf_removal, req.treex_stock, pointsam_ckpt=ckpt,
+                                        merge_fragments=req.merge_fragments).to_dict()
     except SessionError as exc:
         return _err(exc)
 

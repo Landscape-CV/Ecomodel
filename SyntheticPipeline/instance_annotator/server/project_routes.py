@@ -58,6 +58,11 @@ class IslandSegReq(BaseModel):
     leaf_removal: bool = False
     tiles: Optional[List[str]] = None
     pointsam_ckpt: Optional[str] = None
+    merge_fragments: bool = False
+
+
+class FragmentsReq(BaseModel):
+    auto_apply: bool = True
 
 
 class ExportReq(BaseModel):
@@ -229,9 +234,18 @@ def island_segment(req: IslandSegReq):
             summary = segment_island(p, req.method, buffer=req.buffer, voxel=req.voxel,
                                      leaf_removal=req.leaf_removal, tile_names=req.tiles, pointsam_ckpt=ckpt,
                                      progress=progress, log=lambda s: print(s, flush=True))
+            frag = None
+            if req.merge_fragments:
+                from ..project.fragments import find_fragment_candidates
+
+                frag = find_fragment_candidates(p, auto_apply=True, progress=progress,
+                                                log=lambda s: print(s, flush=True))
+                psession.candidates = psession._load_candidates()
             job.stage("Refreshing tree stats", None)
             psession.after_bulk_change()
-            job.message = f"{summary['trees']} trees across {summary['tiles']} tiles"
+            job.message = f"{summary['trees'] - (frag['merged'] if frag else 0)} trees across {summary['tiles']} tiles"
+            if frag:
+                job.message += f"; merged {frag['merged']} split pieces, {frag['candidates']} pairs to review"
             job.result = {"summary": summary}
 
         return psession.start_job("island_segment", work).to_dict()
@@ -255,6 +269,31 @@ def island_stitch():
             job.message = f"{len(cands)} border contacts, {len(psession.candidates)} open for review"
 
         return psession.start_job("island_stitch", work).to_dict()
+    except ProjectError as exc:
+        return _err(exc)
+
+
+@router.post("/island/fragments")
+def island_fragments(req: FragmentsReq):
+    from ..project.fragments import find_fragment_candidates
+
+    try:
+        p = psession.require()
+
+        def work(job):
+            def progress(done, total, msg):
+                job.stage(msg, done / max(total, 1))
+
+            res = find_fragment_candidates(p, auto_apply=req.auto_apply, progress=progress,
+                                           log=lambda s: print(s, flush=True))
+            if res["merged"]:
+                job.stage("Refreshing tree stats", None)
+                psession.after_bulk_change()
+            psession.candidates = psession._load_candidates()
+            job.message = f"Merged {res['merged']} split pieces; {res['candidates']} pairs to review"
+            job.result = res
+
+        return psession.start_job("island_fragments", work).to_dict()
     except ProjectError as exc:
         return _err(exc)
 
