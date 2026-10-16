@@ -33,7 +33,28 @@ class SegmenterPointSAM:
         voxel_size: float = 0.05,
         group_number: int = 2048,
         group_size: int = 256,
+        mode: str = "local",
+        crop_size: float = 12.0,
+        crop_stride: float = 4.0,
+        crop_points: int = 10000,
+        crop_group_number: int = 512,
+        crop_group_size: int = 64,
+        prompt_source: str = "grid",
+        neg_neighbors: bool = False,
+        neg_radius: float = 5.0,
+        min_points: int = 50,
+        max_mask_frac: float = 1.0,
     ):
+        """
+        mode="global": legacy — whole cloud in one unit sphere (max_points,
+        group_number/group_size), grid prompts, IoU-NMS fusion.
+        mode="local": crops of ``crop_size`` m around each prompt, subsampled to
+        ``crop_points`` with crop_group_* patches (matches fine-tuning), stem
+        prompts and stem-aware fusion (see promptable_instance).
+        prompt_source: "stems" (detect_stems) or "grid" (auto_stem_grid_prompts).
+        max_mask_frac: drop local masks covering more than this share of their crop
+        ("everything" masks, which otherwise chain unrelated trees during fusion).
+        """
         self.checkpoint_path = checkpoint_path
         self.config_name = config_name
         self.config_dir = config_dir
@@ -42,6 +63,18 @@ class SegmenterPointSAM:
         self.voxel_size = voxel_size
         self.group_number = group_number
         self.group_size = group_size
+        self.mode = mode
+        self.crop_size = crop_size
+        self.crop_stride = crop_stride
+        self.crop_points = crop_points
+        self.crop_group_number = crop_group_number
+        self.crop_group_size = crop_group_size
+        self.prompt_source = prompt_source
+        self.neg_neighbors = neg_neighbors
+        self.neg_radius = neg_radius
+        self.min_points = min_points
+        self.max_mask_frac = max_mask_frac
+        self.last_info: dict = {}
         self._model = None
 
     def _ensure_model(self):
@@ -84,6 +117,136 @@ class SegmenterPointSAM:
         self._model = model
 
     def segment(self, point_cloud: np.ndarray, output_dir: str = None, prompts=None):
+        try:
+            self._ensure_model()
+        except Exception as exc:
+            print(f"[SegmenterPointSAM] model load failed: {exc}")
+            return None, None
+        if self.mode == "local":
+            return self._segment_local(point_cloud, prompts)
+        return self._segment_global(point_cloud, prompts)
+
+    def _set_groups(self, npts: int, number: int, size: int) -> None:
+        try:
+            grouper = self._model.pc_encoder.patch_embed.grouper
+            grouper.num_groups = min(number, max(1, npts))
+            grouper.group_size = min(size, max(2, npts))
+        except Exception:
+            pass
+
+    def _segment_local(self, point_cloud: np.ndarray, prompts=None):
+        import torch
+        from scipy.spatial import cKDTree
+        from promptable_instance import (
+            auto_stem_grid_prompts,
+            fuse_stem_masks,
+            intensity_to_rgb,
+            propagate_labels_nn,
+            stem_click_prompts,
+            voxel_downsample_with_index,
+        )
+
+        xyz_full = point_cloud[:, :3].astype(np.float64)
+        rgb_full = intensity_to_rgb(point_cloud)
+        xyz_ds, keep = voxel_downsample_with_index(xyz_full, self.voxel_size)
+        rgb_ds = rgb_full[keep]
+        n = len(xyz_ds)
+
+        if prompts is None:
+            if self.prompt_source == "grid":
+                groups = [p.reshape(1, 3) for p in auto_stem_grid_prompts(xyz_ds, max_prompts=100000)]
+            else:
+                groups = stem_click_prompts(xyz_ds)
+        else:
+            groups = [np.asarray(p, dtype=np.float64).reshape(-1, 3) for p in prompts]
+        self.last_info = {"num_prompts": len(groups)}
+        if not groups:
+            return point_cloud, np.full(len(xyz_full), -1, dtype=np.int32)
+
+        tree = cKDTree(xyz_ds)
+        seeds = tree.query(np.stack([g[0] for g in groups]), k=1)[1].astype(np.int64)
+        anchors = np.stack([g[0, :2] for g in groups])
+
+        # Assign each prompt to the crop centre nearest to it (stride grid), so a
+        # prompt sits within stride/2 of its crop centre.
+        st, half = self.crop_stride, self.crop_size / 2.0
+        origin = xyz_ds[:, :2].min(axis=0)
+        cell = np.floor((anchors - origin) / st).astype(np.int64)
+        crops: dict = {}
+        for gi, c in enumerate(map(tuple, cell)):
+            crops.setdefault(c, []).append(gi)
+
+        xy_tree = cKDTree(xyz_ds[:, :2])
+        rng = np.random.default_rng(0)
+        masks, logits, scores, seed_list = [], [], [], []
+        dev = "cuda" if self.use_gpu else "cpu"
+        for c, gids in crops.items():
+            centre = origin + (np.asarray(c) + 0.5) * st
+            idx = np.asarray(xy_tree.query_ball_point(centre, r=half * np.sqrt(2)), dtype=np.int64)
+            if len(idx) == 0:
+                continue
+            idx = idx[np.all(np.abs(xyz_ds[idx, :2] - centre) <= half, axis=1)]
+            if len(idx) < 16:
+                continue
+            sub = idx if len(idx) <= self.crop_points else rng.choice(idx, size=self.crop_points, replace=False)
+            cxyz = xyz_ds[sub]
+            centroid = cxyz.mean(axis=0)
+            scale = float(np.linalg.norm(cxyz - centroid, axis=1).max()) or 1.0
+            pc_xyz = torch.from_numpy(((cxyz - centroid) / scale).astype(np.float32)).unsqueeze(0).to(dev)
+            pc_rgb = torch.from_numpy(((rgb_ds[sub] - 0.5) / 0.5).astype(np.float32)).unsqueeze(0).to(dev)
+
+            kmax = max(len(groups[g]) for g in gids)
+            pcs, pls = [], []
+            for g in gids:
+                pts = groups[g]
+                lbl = [1] * len(pts)
+                if self.neg_neighbors:
+                    neg = [groups[o][0] for o in gids if o != g
+                           and np.hypot(*(groups[o][0, :2] - pts[0, :2])) <= self.neg_radius]
+                    if neg:
+                        pts = np.vstack([pts, np.stack(neg)])
+                        lbl += [0] * len(neg)
+                pcs.append(pts)
+                pls.append(lbl)
+            kmax = max(len(p) for p in pcs)
+            pp = np.stack([np.vstack([p, np.repeat(p[:1], kmax - len(p), 0)]) for p in pcs])
+            pl = np.stack([np.asarray(l + [1] * (kmax - len(l))) for l in pls])
+            pp = np.clip((pp - centroid) / scale, -1.0, 1.0).astype(np.float32)
+
+            self._set_groups(len(sub), self.crop_group_number, self.crop_group_size)
+            with torch.no_grad():
+                m, sc = self._model.predict_masks(
+                    pc_xyz, pc_rgb,
+                    torch.from_numpy(pp).to(dev), torch.from_numpy(pl).long().to(dev),
+                    prompt_masks=None, multimask_output=True,
+                )
+            best = torch.argmax(sc, dim=1)
+            ar = torch.arange(len(gids), device=sc.device)
+            lg = m[ar, best].float().cpu().numpy()  # [M, len(sub)]
+            sc_best = sc[ar, best].float().cpu().numpy()
+
+            # Spread sample logits to every crop point by nearest sample.
+            if len(sub) < len(idx):
+                nn = cKDTree(cxyz).query(xyz_ds[idx], k=1)[1]
+                lg_full = lg[:, nn]
+            else:
+                lg_full = lg
+            for j, g in enumerate(gids):
+                on = lg_full[j] > 0
+                if on.mean() > self.max_mask_frac:
+                    continue
+                masks.append(idx[on])
+                logits.append(lg_full[j][on])
+                scores.append(float(sc_best[j]))
+                seed_list.append(int(seeds[g]))
+
+        labels_ds = fuse_stem_masks(n, masks, logits, scores, seed_list, min_points=self.min_points)
+        self.last_info.update({"num_crops": len(crops), "num_trees": int(labels_ds.max() + 1) if n else 0})
+        if len(xyz_ds) != len(xyz_full):
+            return point_cloud, propagate_labels_nn(xyz_ds, labels_ds, xyz_full)
+        return point_cloud, labels_ds
+
+    def _segment_global(self, point_cloud: np.ndarray, prompts=None):
         from promptable_instance import (
             auto_stem_grid_prompts,
             intensity_to_rgb,
@@ -91,12 +254,6 @@ class SegmenterPointSAM:
             propagate_labels_nn,
             voxel_downsample_with_index,
         )
-
-        try:
-            self._ensure_model()
-        except Exception as exc:
-            print(f"[SegmenterPointSAM] model load failed: {exc}")
-            return None, None
 
         xyz_full = point_cloud[:, :3].astype(np.float64)
         rgb_full = intensity_to_rgb(point_cloud)

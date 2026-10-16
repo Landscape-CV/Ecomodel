@@ -68,7 +68,7 @@ def analyse(xyz: np.ndarray, labels: np.ndarray, *, ground_xyz: Optional[np.ndar
     root = Path(__file__).resolve().parents[2]
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
-    from Utils.promptable_instance import BaseSurface
+    from promptable_instance import BaseSurface
 
     surf = BaseSurface(ground_xyz if ground_xyz is not None and len(ground_xyz) else xyz)
     m = labels >= 0

@@ -1,0 +1,63 @@
+# v2 recipe (EXPERIMENTS.md E3+): prompts that match inference, more masks per step, longer cosine
+# schedule, LoRA on the encoder, scanner-robustness augmentation, model selection on the inference metric.
+mode: lora
+pretrained_ckpt: ../../thirdparty/checkpoints/point_sam/model.safetensors
+config_name: large
+config_dir: ../../thirdparty/Point-SAM/configs
+
+data_dir: ../pointsam_voxelized
+# Extra converted datasets (convert_open_dataset.py / export_annotator_crops.py) go here:
+train_dirs:
+  - ../pointsam_voxelized/train
+val_dir: ../pointsam_voxelized/val
+out_dir: ../pointsam_checkpoints/v2_lora
+
+num_points: 10000
+num_masks: 8
+val_num_masks: 4
+min_mask_points: 40
+batch_size: 1
+grad_accum: 2
+num_workers: 0
+max_steps: 3000
+val_every: 200
+log_every: 25
+val_max_crops: 64
+lr: 1.0e-4
+encoder_lr: 2.0e-4      # LoRA adapters + patch embed
+weight_decay: 0.01
+max_grad_norm: 1.0
+schedule: cosine
+warmup_steps: 150
+min_lr_frac: 0.05
+seed: 0
+amp: true
+early_stop_patience: 6
+
+# Inference uses one click (stem) and takes the best-scored of 3 masks: weight that iteration.
+first_iter_weight: 3.0
+prompt_mix: {stem: 0.4, stem1: 0.2, random: 0.2, interior: 0.2}
+val_prompt: stem
+select_metric: val_iou_pick
+
+lora_rank: 8
+lora_alpha: 16
+lora_targets: [q_proj, v_proj]
+train_patch_embed: true
+
+# Must match SegmenterPointSAM crop_group_number / crop_group_size at inference.
+group_number: 512
+group_size: 64
+
+augment:
+  p_drop_ground: 0.7     # inference input is CSF ground-removed
+  p_density: 0.5
+  p_occlusion: 0.4
+  p_height: 0.3
+  p_no_intensity: 0.2
+  jitter: 0.01
+  tilt_deg: 3
+
+cuda_mem_fraction: 0.92
+vram_soft_frac: 0.88
+vram_hard_frac: 0.96

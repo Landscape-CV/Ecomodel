@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import zlib
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -27,7 +28,7 @@ _ROOT = _SP.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from Utils.promptable_instance import intensity_to_rgb  # noqa: E402
+from promptable_instance import intensity_to_rgb  # noqa: E402
 
 DEFAULT_SRC = _SP / "testdataset" / "instance"
 DEFAULT_OUT = _SP / "pointsam_voxelized"
@@ -208,6 +209,7 @@ def process_tile(
     max_points: int,
     min_instances: int,
     seed: int,
+    drop_unlabeled_above: float | None = None,
 ) -> dict:
     import laspy
 
@@ -220,11 +222,48 @@ def process_tile(
     ids = np.load(ids_path).astype(np.int32)
     if len(ids) != len(xyz):
         raise ValueError(f"{name}: instances len {len(ids)} != points {len(xyz)}")
+    if drop_unlabeled_above is not None:
+        keep = drop_high_unlabeled(xyz, ids, drop_unlabeled_above)
+        xyz, points, ids = xyz[keep], points[keep], ids[keep]
 
+    return write_tile_crops(
+        name, xyz, intensity_to_rgb(points), ids, out_split_dir,
+        voxel_size=voxel_size, crop_size=crop_size, stride=stride,
+        min_points=min_points, max_points=max_points,
+        min_instances=min_instances, seed=seed,
+    )
+
+
+def drop_high_unlabeled(xyz: np.ndarray, ids: np.ndarray, height: float) -> np.ndarray:
+    """Keep-mask that removes unlabelled (-1) points more than `height` m above the local base.
+
+    Partially labelled real data leaves whole trees at -1; as background they would teach the model
+    that trees are negatives. Ground and low understory stay as genuine background.
+    """
+    from promptable_instance import BaseSurface
+
+    h = BaseSurface(xyz).height(xyz)
+    return (ids >= 0) | (h <= height)
+
+
+def write_tile_crops(
+    name: str,
+    xyz: np.ndarray,
+    rgb_all: np.ndarray,
+    ids: np.ndarray,
+    out_split_dir: Path,
+    voxel_size: float,
+    crop_size: float,
+    stride: float,
+    min_points: int,
+    max_points: int,
+    min_instances: int,
+    seed: int,
+) -> dict:
+    """Voxelize one labelled cloud (trees >=0, background -1) and write npz crops."""
     # Keep trees + a capped amount of ground as SAM background (id=-1).
     # Pure tree-only crops make single-tree masks cover all points and break
     # Point-SAM's border prompt sampler.
-    rgb_all = intensity_to_rgb(points)
     tree = ids >= 0
     ground = ~tree
     xyz_t, ids_t, rgb_t = xyz[tree], ids[tree], rgb_all[tree]
@@ -235,7 +274,7 @@ def process_tile(
         xyz_v_g, rgb_v_g, ids_v_g = voxelize_majority(xyz_g, ids_g, rgb_g, voxel_size)
         max_g = max(len(xyz_v_t), 1)  # at most as many ground voxels as trees
         if len(xyz_v_g) > max_g:
-            sel = np.random.default_rng(seed + (hash(name) % 10_000_000)).choice(
+            sel = np.random.default_rng(seed + zlib.crc32(name.encode())).choice(
                 len(xyz_v_g), size=max_g, replace=False
             )
             xyz_v_g, rgb_v_g, ids_v_g = xyz_v_g[sel], rgb_v_g[sel], ids_v_g[sel]
@@ -244,7 +283,7 @@ def process_tile(
         ids_v = np.concatenate([ids_v_t, ids_v_g], axis=0)
     else:
         xyz_v, rgb_v, ids_v = xyz_v_t, rgb_v_t, ids_v_t
-    rng = np.random.default_rng(seed + (hash(name) % 10_000_000))
+    rng = np.random.default_rng(seed + zlib.crc32(name.encode()))
     crops = make_crops(
         xyz_v,
         rgb_v,
@@ -296,6 +335,10 @@ def main():
                     help="Min tree instances per crop (1 ok if ground kept as BG)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--val_per_stratum", type=int, default=2)
+    ap.add_argument("--drop_unlabeled_above", type=float, default=None,
+                    help="Partially labelled data: drop -1 points higher than this (m) above the local base")
+    ap.add_argument("--split_file", type=Path, default=None,
+                    help="Reuse a split.json (empty 'train' = every tile not in 'val')")
     ap.add_argument(
         "--smoke",
         type=int,
@@ -311,9 +354,15 @@ def main():
     if not tiles:
         raise SystemExit(f"No tiles with scan+instances under {args.src}")
 
-    split = make_stratified_split(
-        tiles, args.src, seed=args.seed, val_per_stratum=args.val_per_stratum
-    )
+    if args.split_file is not None:
+        given = json.loads(args.split_file.read_text())
+        val = [t for t in given.get("val", []) if t in tiles]
+        train = [t for t in (given.get("train") or tiles) if t in tiles and t not in val]
+        split = {"train": sorted(train), "val": sorted(val), "seed": given.get("seed", args.seed)}
+    else:
+        split = make_stratified_split(
+            tiles, args.src, seed=args.seed, val_per_stratum=args.val_per_stratum
+        )
     print(
         f"Split seed={args.seed}: train={len(split['train'])} val={len(split['val'])}"
     )
@@ -363,6 +412,7 @@ def main():
                 max_points=args.max_points,
                 min_instances=args.min_instances,
                 seed=args.seed,
+                drop_unlabeled_above=args.drop_unlabeled_above,
             )
             st["split"] = split_name
             tile_stats.append(st)

@@ -2,6 +2,14 @@
 
 Domain-adapt the HuggingFace Point-SAM checkpoint on `testdataset/instance/`, then compare against vanilla weights on a held-out val set.
 
+> **Improvement plan in progress:** see [`EXPERIMENTS.md`](EXPERIMENTS.md) for the experiment log (benchmarks, v2/v3 recipes, real/open data, baselines). New tools:
+> - `benchmark_pointsam.py` scores inference configs × checkpoints and separates click quality from mask quality.
+> - `tune_stems.py` sweeps the stem detector.
+> - `convert_open_dataset.py` converts open datasets into training crops.
+> - `configs/forest_v2_lora.yaml` and `configs/forest_v3_mixed_lora.yaml` are the new training recipes.
+>
+> The sections below describe the original (v1) recipe.
+
 ## Dataset verdict
 
 | Item | Value |

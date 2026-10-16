@@ -17,6 +17,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -110,7 +111,26 @@ def wrap_encoder_no_grad(model) -> None:
     print("[train] pc_encoder wrapped with torch.no_grad()+detach (VRAM guard)")
 
 
-def set_trainable(model, mode: str):
+def set_trainable(model, mode: str, cfg: Optional[dict] = None):
+    cfg = cfg or {}
+    if mode == "lora":
+        from lora import add_lora
+
+        for p in model.parameters():
+            p.requires_grad = False
+        wrapped = add_lora(model.pc_encoder.transformer, targets=cfg.get("lora_targets", ["q_proj", "v_proj"]),
+                           rank=int(cfg.get("lora_rank", 8)), alpha=float(cfg.get("lora_alpha", 16)),
+                           dropout=float(cfg.get("lora_dropout", 0.0)))
+        if cfg.get("train_patch_embed", True):
+            for p in model.pc_encoder.patch_embed.parameters():
+                p.requires_grad = True
+        for name in ("point_encoder", "mask_encoder", "mask_decoder"):
+            for p in getattr(model, name).parameters():
+                p.requires_grad = True
+        n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        n_all = sum(p.numel() for p in model.parameters())
+        print(f"[train] lora: {len(wrapped)} adapters, trainable {n_train:,} / {n_all:,} params")
+        return
     if mode == "decoder_ft":
         for p in model.pc_encoder.parameters():
             p.requires_grad = False
@@ -176,6 +196,12 @@ def build_optimizer(model, cfg: dict):
     mode = cfg["mode"]
     lr = float(cfg["lr"])
     wd = float(cfg.get("weight_decay", 0.01))
+    if mode == "lora":
+        enc = [p for p in model.pc_encoder.parameters() if p.requires_grad]
+        enc_ids = {id(p) for p in enc}
+        rest = [p for p in model.parameters() if p.requires_grad and id(p) not in enc_ids]
+        return torch.optim.AdamW([{"params": enc, "lr": float(cfg.get("encoder_lr", lr))},
+                                  {"params": rest, "lr": lr}], weight_decay=wd)
     if mode == "full_ft":
         enc_lr = float(cfg.get("encoder_lr", lr * 0.1))
         params = [
@@ -192,34 +218,136 @@ def build_optimizer(model, cfg: dict):
     return torch.optim.AdamW(trainable, lr=lr, weight_decay=wd)
 
 
+def first_prompts(coords: torch.Tensor, gt: torch.Tensor, stem_idx: torch.Tensor, kind: str):
+    """First-iteration prompts [B*M, K, 3] / labels, or None for Point-SAM's own interior sampler.
+
+    kind: "stem" (stem + upper click, as SegmenterPointSAM's stem prompts), "stem1" (stem click only),
+    "random" (a random point inside the mask), "interior" (None: upstream deepest-point sampler).
+    """
+    b, m, _ = gt.shape
+    if kind == "interior":
+        return None, None
+    if kind in ("stem", "stem1"):
+        k = 2 if kind == "stem" else 1
+        idx = stem_idx[:, :, :k]                                           # [B, M, K]
+        pts = torch.gather(coords.unsqueeze(1).expand(b, m, -1, -1), 2,
+                           idx.unsqueeze(-1).expand(-1, -1, -1, 3))         # [B, M, K, 3]
+        pts = pts.reshape(b * m, k, 3)
+    else:
+        flat = gt.reshape(b * m, -1)
+        pick = torch.multinomial(flat.float() + 1e-9, 1).squeeze(1)       # [B*M]
+        src = coords.unsqueeze(1).expand(b, m, -1, -1).reshape(b * m, -1, 3)
+        pts = src[torch.arange(b * m, device=coords.device), pick].unsqueeze(1)
+    return pts, torch.ones(pts.shape[:2], dtype=torch.bool, device=coords.device)
+
+
+def sam_forward(model, coords, feats, gt, p0=None, l0=None, is_eval: bool = False):
+    """PointCloudSAM.forward with an optional fixed first prompt (later clicks: upstream error sampler)."""
+    from pc_sam.model.common import repeat_interleave, sample_prompts_adapter
+    from pc_sam.model.mask_decoder import AuxInputs
+    from torkit3d.nn.functional import batch_index_select
+
+    b, m = gt.shape[:2]
+    pc_emb, patches = model.pc_encoder(coords, feats)
+    centers, knn_idx = patches["centers"], patches["knn_idx"]
+    aux = AuxInputs(coords=coords, features=feats, centers=centers)
+    pc_pe = model.point_encoder.pe_layer(centers)
+    refine = []
+    if model.enable_mask_refinement_iterations and model.training:
+        refine = [model.prompt_iters - 1]
+        if model.prompt_iters > 1:
+            refine.append(int(torch.randint(1, model.prompt_iters, (1,)).item()))
+    pc_ = coords.new_empty((b * m, 0, 3))
+    pl_ = gt.new_empty((b * m, 0))
+    prompt_masks = None
+    outputs = []
+    for i in range(model.prompt_iters):
+        if i == 0 and p0 is not None:
+            pc_, pl_ = torch.cat([pc_, p0.to(pc_.dtype)], 1), torch.cat([pl_, l0], 1)
+        elif i == 0 or i not in refine:
+            nc, nl = sample_prompts_adapter(coords, gt, prompt_masks, is_eval=is_eval)
+            pc_, pl_ = torch.cat([pc_, nc], 1), torch.cat([pl_, nl], 1)
+        sparse = model.point_encoder(pc_, pl_)
+        dense = model.mask_encoder(prompt_masks, coords, centers, knn_idx, center_idx=patches.get("fps_idx"))
+        dense = repeat_interleave(dense, sparse.shape[0] // dense.shape[0], 0)
+        masks, iou_preds = model.mask_decoder(pc_emb, pc_pe, sparse, dense, aux_inputs=aux,
+                                              multimask_output=(i == 0))
+        if i == 0:
+            sel = torch.argmax(iou_preds, dim=1)
+            prompt_masks = batch_index_select(masks, sel, dim=1)
+        else:
+            sel = 0
+            prompt_masks = masks[:, 0]
+        outputs.append(dict(prompt_coords=pc_, prompt_labels=pl_, masks=masks, iou_preds=iou_preds,
+                            max_iou_pred_ind=sel, prompt_masks=prompt_masks))
+    return outputs
+
+
+def weighted_loss(criterion, outputs, gt_flat, first_w: float):
+    """Mean of per-iteration losses with the first (single-shot, as at inference) weighted by first_w."""
+    losses, aux = [], []
+    for o in outputs:
+        l, a = criterion([o], gt_flat)
+        losses.append(l)
+        aux += a
+    w = torch.tensor([first_w] + [1.0] * (len(losses) - 1), device=losses[0].device)
+    return (torch.stack(losses) * w).sum() / w.sum(), aux
+
+
 @torch.no_grad()
-def evaluate(model, loader, criterion, device, amp: bool) -> dict:
+def evaluate(model, loader, criterion, device, amp: bool, val_prompt: str = "stem") -> dict:
+    """val_iou: after all correction clicks (as before); val_iou_first: oracle-best of the 3 first-click
+    masks; val_iou_pick: the mask Point-SAM itself scores highest after the first click (what inference
+    uses) — the model-selection metric."""
     model.eval()
-    ious = []
-    losses = []
+    ious, first, pick, losses = [], [], [], []
     for batch in loader:
         coords = batch["coords"].to(device)
         feats = batch["features"].to(device)
         gt = batch["gt_masks"].to(device)
+        p0, l0 = first_prompts(coords, gt, batch["stem_idx"].to(device), val_prompt)
         with torch.cuda.amp.autocast(enabled=amp and device.type == "cuda"):
-            outputs = model(coords=coords, features=feats, gt_masks=gt, is_eval=True)
+            outputs = sam_forward(model, coords, feats, gt, p0, l0, is_eval=True)
             gt_flat = gt.flatten(0, 1)
             loss, aux = criterion(outputs, gt_flat)
         losses.append(float(loss.item()))
-        if aux:
-            ious.append(float(aux[-1]["iou"].mean().item()))
+        ious.append(float(aux[-1]["iou"].mean().item()))
+        first.append(float(aux[0]["iou"].mean().item()))
+        o = outputs[0]
+        sel = torch.argmax(o["iou_preds"], dim=1)
+        pm = o["masks"][torch.arange(len(sel), device=sel.device), sel] > 0
+        inter = (pm & gt_flat).sum(-1).float()
+        union = (pm | gt_flat).sum(-1).float().clamp(min=1)
+        pick.append(float((inter / union).mean().item()))
     model.train()
     return {
         "val_loss": float(np.mean(losses)) if losses else float("nan"),
         "val_iou": float(np.mean(ious)) if ious else float("nan"),
+        "val_iou_first": float(np.mean(first)) if first else float("nan"),
+        "val_iou_pick": float(np.mean(pick)) if pick else float("nan"),
     }
 
 
 def save_safetensors(model, path: Path):
     from safetensors.torch import save_model
 
+    from lora import merged_for_save
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    save_model(model, str(path))
+    with merged_for_save(model):
+        save_model(model, str(path))
+
+
+def lr_factor(step: int, cfg: dict) -> float:
+    warm = int(cfg.get("warmup_steps", 0))
+    total = int(cfg["max_steps"])
+    if warm and step < warm:
+        return (step + 1) / warm
+    if cfg.get("schedule", "constant") == "cosine":
+        t = (step - warm) / max(1, total - warm)
+        lo = float(cfg.get("min_lr_frac", 0.05))
+        return lo + (1 - lo) * 0.5 * (1 + np.cos(np.pi * min(1.0, t)))
+    return 1.0
 
 
 def main():
@@ -270,20 +398,32 @@ def main():
     from dataset import ForestCropDataset, collate_forest
     from pc_sam.model.loss import Criterion
 
+    aug = cfg.get("augment", {}) or {}
+    train_dirs = [_resolve(d, _HERE) for d in cfg.get("train_dirs", [])] or [data_dir / "train"]
+    val_cfg = cfg.get("val_dir")
+    if isinstance(val_cfg, list):
+        val_dir = [_resolve(d, _HERE) for d in val_cfg]
+    else:
+        val_dir = _resolve(val_cfg, _HERE) if val_cfg else data_dir / "val"
     train_ds = ForestCropDataset(
-        data_dir / "train",
+        train_dirs,
         num_points=int(cfg["num_points"]),
         num_masks=int(cfg["num_masks"]),
         augment=True,
         seed=seed,
+        aug=aug,
+        min_mask_points=int(cfg.get("min_mask_points", 1)),
     )
     val_ds = ForestCropDataset(
-        data_dir / "val",
+        val_dir,
         num_points=int(cfg["num_points"]),
-        num_masks=int(cfg["num_masks"]),
+        num_masks=int(cfg.get("val_num_masks", cfg["num_masks"])),
         augment=False,
         seed=seed + 1,
+        aug={"val_drop_ground": bool(aug.get("p_drop_ground", 0) >= 0.5)},
+        min_mask_points=int(cfg.get("min_mask_points", 1)),
     )
+    print(f"[train] train dirs: {[str(d) for d in train_dirs]} val: {val_dir}")
     train_loader = DataLoader(
         train_ds,
         batch_size=int(cfg["batch_size"]),
@@ -312,8 +452,10 @@ def main():
     print(f"[train] crops train={len(train_ds)} val={len(val_ds)} device={device}")
 
     model = build_model(cfg, device)
-    set_trainable(model, cfg["mode"])
+    set_trainable(model, cfg["mode"], cfg)
+    model.to(device)
     optimizer = build_optimizer(model, cfg)
+    base_lrs = [g["lr"] for g in optimizer.param_groups]
     criterion = Criterion(use_soft_iou=False)
     amp = bool(cfg.get("amp", True)) and device.type == "cuda"
     scaler = torch.cuda.amp.GradScaler(enabled=amp)
@@ -323,36 +465,54 @@ def main():
     log_every = int(cfg.get("log_every", 20))
     patience = int(cfg.get("early_stop_patience", 8))
     max_grad = float(cfg.get("max_grad_norm", 1.0))
+    accum = int(cfg.get("grad_accum", 1))
+    first_w = float(cfg.get("first_iter_weight", 1.0))
+    mix = cfg.get("prompt_mix", {"interior": 1.0})
+    mix_kinds, mix_p = list(mix), np.array(list(mix.values()), dtype=float)
+    mix_p /= mix_p.sum()
+    val_prompt = cfg.get("val_prompt", "interior" if mix_kinds == ["interior"] else "stem")
+    select_metric = cfg.get("select_metric", "val_iou")
+    prompt_rng = np.random.default_rng(seed + 3)
 
     log = {
         "config": cfg,
         "config_path": str(cfg_path),
         "steps": [],
         "best_val_iou": -1.0,
+        "select_metric": select_metric,
     }
     best_iou = -1.0
     bad_rounds = 0
     step = 0
+    micro = 0
     model.train()
     t0 = time.time()
     epoch = 0
+    optimizer.zero_grad(set_to_none=True)
 
     while step < max_steps:
         epoch += 1
+        train_ds.epoch = epoch
         for batch in train_loader:
             if step >= max_steps:
                 break
             coords = batch["coords"].to(device)
             feats = batch["features"].to(device)
             gt = batch["gt_masks"].to(device)
+            kind = str(prompt_rng.choice(mix_kinds, p=mix_p))
+            p0, l0 = first_prompts(coords, gt, batch["stem_idx"].to(device), kind)
 
-            optimizer.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=amp):
-                outputs = model(coords=coords, features=feats, gt_masks=gt)
+                outputs = sam_forward(model, coords, feats, gt, p0, l0)
                 gt_flat = gt.flatten(0, 1)
-                loss, aux = criterion(outputs, gt_flat)
+                loss, aux = weighted_loss(criterion, outputs, gt_flat, first_w)
 
-            scaler.scale(loss).backward()
+            scaler.scale(loss / accum).backward()
+            micro += 1
+            if micro % accum:
+                continue
+            for g, lr0 in zip(optimizer.param_groups, base_lrs):
+                g["lr"] = lr0 * lr_factor(step, cfg)
             if max_grad > 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(
@@ -360,6 +520,7 @@ def main():
                 )
             scaler.step(optimizer)
             scaler.update()
+            optimizer.zero_grad(set_to_none=True)
 
             step += 1
             try:
@@ -393,15 +554,18 @@ def main():
                 log["steps"].append(entry)
 
             if step % val_every == 0 or step == max_steps:
-                metrics = evaluate(model, val_loader, criterion, device, amp)
+                metrics = evaluate(model, val_loader, criterion, device, amp, val_prompt)
                 print(
                     f"[val] step={step} loss={metrics['val_loss']:.4f} "
-                    f"iou={metrics['val_iou']:.3f}"
+                    f"iou={metrics['val_iou']:.3f} first={metrics['val_iou_first']:.3f} "
+                    f"pick={metrics['val_iou_pick']:.3f} lr={optimizer.param_groups[-1]['lr']:.2e}",
+                    flush=True,
                 )
                 log["steps"].append({"step": step, **metrics})
                 save_safetensors(model, out_dir / "last.safetensors")
-                if metrics["val_iou"] > best_iou:
-                    best_iou = metrics["val_iou"]
+                (out_dir / "train_log.json").write_text(json.dumps(log, indent=2))
+                if metrics[select_metric] > best_iou:
+                    best_iou = metrics[select_metric]
                     log["best_val_iou"] = best_iou
                     save_safetensors(model, out_dir / "best.safetensors")
                     print(f"[val] new best iou={best_iou:.3f} -> best.safetensors", flush=True)
