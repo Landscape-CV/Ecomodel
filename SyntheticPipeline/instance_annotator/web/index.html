@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>TLS Instance Annotator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/style.css" />
+  <script type="importmap">
+    { "imports": { "three": "/vendor/three.module.js" } }
+  </script>
+</head>
+<body class="booting">
+  <header id="topbar">
+    <div class="brand">TLS Annotator</div>
+    <button id="btn-open" class="btn" title="Open cloud (O)">Open</button>
+    <div id="file-label" class="file-label"><span id="file-name">No cloud loaded</span><span id="dirty-dot" class="dirty-dot hidden" title="Unsaved changes"></span></div>
+
+    <div class="sep"></div>
+    <div class="group" id="tool-group">
+      <button class="btn tool active" data-tool="navigate" title="Navigate / click-select tree (V)">Navigate <kbd>V</kbd></button>
+      <button class="btn tool" data-tool="lasso" title="Lasso select (L)">Lasso <kbd>L</kbd></button>
+      <button class="btn tool" data-tool="box" title="Box select (B)">Box <kbd>B</kbd></button>
+      <button class="btn tool" data-tool="brush" title="Sphere brush (R)">Brush <kbd>R</kbd></button>
+      <label class="inline" title="Brush / grow radius in meters (- / =)">r <input id="brush-r" type="number" min="0.02" max="5" step="0.05" value="0.3" /> m</label>
+    </div>
+
+    <div class="sep"></div>
+    <div class="group" id="action-group">
+      <button class="btn act" data-act="new" title="Selection becomes a new tree (N)">New tree <kbd>N</kbd></button>
+      <button class="btn act" data-act="assign" title="Assign selection to a tree ID (A)">Assign <kbd>A</kbd></button>
+      <button class="btn act" data-act="merge" title="Merge trees in selection into one (M)">Merge <kbd>M</kbd></button>
+      <button class="btn act danger" data-act="nontree" title="Mark selection as non-tree (Del)">Non-tree <kbd>Del</kbd></button>
+      <button class="btn act" data-act="grow" title="Grow selection by connected radius (G)">Grow <kbd>G</kbd></button>
+      <button class="btn act" data-act="ground" title="Drop ground points from the selection (D); height in the View panel">−Ground <kbd>D</kbd></button>
+      <button class="btn act" data-act="clear" title="Clear selection (Esc)">Clear <kbd>Esc</kbd></button>
+    </div>
+
+    <div class="sep"></div>
+    <div class="group">
+      <button class="btn" id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button class="btn" id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
+      <button class="btn primary" id="btn-save" title="Save (Ctrl+S)">Save</button>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn" id="btn-help" title="Keyboard shortcuts (?)">?</button>
+  </header>
+  <div id="busy" class="hidden">
+    <div class="progress busy-track indeterminate"><div class="bar"></div></div>
+    <div class="busy-label"><span class="spinner"></span><span class="busy-text"></span></div>
+  </div>
+
+  <main>
+    <div id="viewport">
+      <div id="canvas-host"></div>
+      <svg id="overlay"></svg>
+      <div id="empty-state">
+        <h2>No cloud loaded</h2>
+        <p>Open a tile prefix (for example <code>testdataset/real_instance/l1w_t00_03</code>) or a LAZ/LAS/PLY file.</p>
+        <button class="btn primary" id="btn-open-empty">Open a cloud</button>
+      </div>
+      <div id="hud">
+        <div id="hud-sel">Selected: 0</div>
+        <div id="hud-hover"></div>
+      </div>
+      <canvas id="minimap" class="hidden" title="Island overview: click to move there"></canvas>
+      <div id="view-panel" class="floating">
+        <div class="vp-title">View</div>
+        <label>Color
+          <select id="color-mode">
+            <option value="0">Instance IDs</option>
+            <option value="1">Wood / leaf</option>
+            <option value="2">Height</option>
+          </select>
+        </label>
+        <label>Point size <input id="pt-size" type="range" min="0.5" max="8" step="0.25" value="2" /></label>
+        <label>Opacity <input id="pt-opacity" type="range" min="0.1" max="1" step="0.05" value="1" /></label>
+        <label class="check"><input id="pt-atten" type="checkbox" /> Size by distance</label>
+        <label class="check"><input id="hide-nt" type="checkbox" /> Hide non-tree <kbd>H</kbd></label>
+        <label class="check"><input id="isolate" type="checkbox" /> Isolate focused tree <kbd>I</kbd></label>
+        <div class="wl-toggles hidden" id="wl-toggles">
+          <label class="check"><input id="show-wood" type="checkbox" checked /> Wood</label>
+          <label class="check"><input id="show-leaf" type="checkbox" checked /> Leaves</label>
+        </div>
+        <div class="vp-sub">Height slab (m)</div>
+        <div class="slab">
+          <input id="z-min" type="range" min="0" max="1" step="0.01" value="0" />
+          <input id="z-max" type="range" min="0" max="1" step="0.01" value="1" />
+        </div>
+        <div class="slab-label"><span id="z-min-l">-</span> to <span id="z-max-l">-</span> <button class="link" id="slab-reset">reset</button></div>
+        <label class="inline" title="−Ground (D) deselects points less than this height above the local ground">Ground below <input id="ground-h" type="number" min="0.02" max="3" step="0.05" value="0.3" /> m</label>
+        <button class="btn small" id="btn-frame" title="Frame selection / focused tree / all (F)">Frame <kbd>F</kbd></button>
+      </div>
+    </div>
+
+    <aside id="side">
+      <nav class="tabs">
+        <button class="tab hidden" data-tab="island" id="tab-island">Island</button>
+        <button class="tab active" data-tab="trees">Trees</button>
+        <button class="tab" data-tab="woodleaf">Wood / Leaf</button>
+        <button class="tab" data-tab="segment">Segment</button>
+        <button class="tab" data-tab="export">Export</button>
+      </nav>
+
+      <section class="pane" id="pane-island">
+        <div class="row"><div id="island-summary" class="muted pre"></div><span class="spacer"></span><button class="btn small" id="btn-isl-close">Close project</button></div>
+        <label>Point budget <span><input id="isl-budget" type="range" min="1" max="20" step="1" value="8" /> <span id="isl-budget-l">8M</span></span></label>
+        <label class="check"><input id="isl-adaptive" type="checkbox" checked /> Adaptive point size</label>
+        <div id="isl-stream" class="muted"></div>
+
+        <hr />
+        <div class="section-title">Edit region</div>
+        <p class="muted">Loads a box at full resolution for point-level editing (Lasso / Brush / New tree). Edits are written straight into the project.</p>
+        <div class="row">
+          <button class="btn small" id="btn-region-draw">Draw box</button>
+          <button class="btn small" id="btn-region-tree">Around focused tree</button>
+          <label class="inline">margin <input id="region-margin" type="number" value="3" min="0" step="1" /> m</label>
+        </div>
+        <div id="region-edit" class="box-edit hidden">
+          <label>Centre E <input type="range" data-k="cx" /><input type="number" data-k="cx" step="0.5" /> m</label>
+          <label>Centre N <input type="range" data-k="cy" /><input type="number" data-k="cy" step="0.5" /> m</label>
+          <label>Width (E–W) <input type="range" data-k="w" min="2" max="150" step="0.5" /><input type="number" data-k="w" min="2" step="0.5" /> m</label>
+          <label>Length (N–S) <input type="range" data-k="h" min="2" max="150" step="0.5" /><input type="number" data-k="h" min="2" step="0.5" /> m</label>
+          <div class="row">
+            <button class="btn small" id="btn-region-here" title="Centre the box on the point the camera looks at">Move to view centre</button>
+            <button class="btn small" id="btn-region-look" title="Frame the camera on the box">Look at box</button>
+            <button class="btn small" id="btn-region-clear">Discard box</button>
+          </div>
+        </div>
+        <div id="region-info" class="muted"></div>
+        <div class="row">
+          <button class="btn primary small" id="btn-region-open" disabled>Open region</button>
+          <button class="btn small hidden" id="btn-region-close">Close region</button>
+        </div>
+
+        <hr />
+        <div class="section-title">Focused tree (whole island)</div>
+        <div class="row">
+          <button class="btn small" id="btn-isl-merge">Merge into...</button>
+          <button class="btn small danger" id="btn-isl-nontree">Non-tree</button>
+        </div>
+
+        <hr />
+        <div class="section-title">Segment whole island</div>
+        <p class="muted">Each tile is segmented with a buffer from its neighbours; trees are owned by the tile holding their stem base and matched across borders.</p>
+        <label>Method <select id="iseg-method"></select></label>
+        <label class="hidden">Point-SAM weights <select id="iseg-ps"></select></label>
+        <div class="row">
+          <label class="inline">Buffer <input id="iseg-buffer" type="number" value="10" step="1" min="0" /> m</label>
+          <label class="inline">Voxel <input id="iseg-voxel" type="number" value="0.05" step="0.01" min="0" /> m</label>
+        </div>
+        <label class="check"><input id="iseg-leaf" type="checkbox" /> Leaf removal (RGI) before segmenting</label>
+        <label class="check" title="After segmenting, merge crown pieces without a stem into the tree they touch; unclear pairs go to Merge candidates."><input id="iseg-merge" type="checkbox" checked /> Merge split trees afterwards</label>
+        <button class="btn primary" id="btn-iseg-run">Segment island</button>
+        <div class="job-status hidden" id="iseg-status">
+          <div class="progress job indeterminate"><div class="bar"></div></div>
+          <div class="job-msg"></div>
+          <div class="job-detail muted"></div>
+        </div>
+        <div id="iseg-result" class="muted result-box"></div>
+
+        <hr />
+        <div class="section-title">Merge candidates <span class="muted" id="cand-count"></span></div>
+        <p class="muted">Border: trees that touch across tile borders. Split trees: crown pieces without a stem, or one stem split in two, anywhere on the island.</p>
+        <div class="row">
+          <button class="btn" id="btn-istitch-run">Find border pairs</button>
+          <button class="btn" id="btn-ifrag-run">Find split trees</button>
+        </div>
+        <label class="check" title="Confident split-tree merges are applied immediately; the rest are listed below."><input id="ifrag-auto" type="checkbox" checked /> Auto-merge confident split trees</label>
+        <div class="job-status hidden" id="istitch-status">
+          <div class="progress job indeterminate"><div class="bar"></div></div>
+          <div class="job-msg"></div>
+          <div class="job-detail muted"></div>
+        </div>
+        <div id="istitch-result" class="muted result-box"></div>
+        <div id="cand-list" class="cand-list"></div>
+      </section>
+
+      <section class="pane active" id="pane-trees">
+        <div class="row">
+          <input id="tree-search" type="search" placeholder="Filter by ID..." />
+          <select id="tree-sort">
+            <option value="id">Sort: ID</option>
+            <option value="count">Sort: points</option>
+            <option value="height">Sort: height</option>
+            <option value="unreviewed">Unreviewed first</option>
+          </select>
+        </div>
+        <div class="row">
+          <button class="btn small" id="btn-prev" title="Previous tree ([)">Prev <kbd>[</kbd></button>
+          <button class="btn small" id="btn-next" title="Next tree (])">Next <kbd>]</kbd></button>
+          <button class="btn small" id="btn-review" title="Toggle reviewed on focused tree (K)">Reviewed <kbd>K</kbd></button>
+          <button class="btn small" id="btn-select-tree" title="Select focused tree (T)">Select <kbd>T</kbd></button>
+        </div>
+        <div class="progress"><div id="review-bar"></div></div>
+        <div id="review-label" class="muted">0 / 0 reviewed</div>
+        <div class="table-wrap">
+          <table id="tree-table">
+            <thead><tr><th></th><th>ID</th><th>Points</th><th>Height</th><th title="Reviewed">Rev</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="row foot">
+          <span class="muted" id="nontree-label"></span>
+          <button class="btn small" id="btn-compact" title="Renumber trees 0..T-1">Compact IDs</button>
+        </div>
+      </section>
+
+      <section class="pane" id="pane-woodleaf">
+        <p class="muted">Reference overlay only. It does not change instance labels.</p>
+        <label>Method <select id="wl-method"></select></label>
+        <div id="wl-params"></div>
+        <button class="btn primary" id="btn-wl-run">Run wood / leaf</button>
+        <div class="job-status hidden" id="wl-status">
+          <div class="progress job indeterminate"><div class="bar"></div></div>
+          <div class="job-msg"></div>
+          <div class="job-detail muted"></div>
+        </div>
+        <div id="wl-result" class="muted result-box"></div>
+      </section>
+
+      <section class="pane" id="pane-segment">
+        <p class="muted">Runs an instance segmentation method and replaces all labels (undoable).</p>
+        <label>Method <select id="seg-method"></select></label>
+        <label class="hidden">Point-SAM weights <select id="seg-ps"></select></label>
+        <label class="check"><input id="seg-leaf" type="checkbox" /> Leaf removal (RGI) before segmenting</label>
+        <label class="check" title="Merges crown pieces without a stem into the tree they touch, and stems split in two. Unclear pairs are listed for review."><input id="seg-merge" type="checkbox" checked /> Merge split trees afterwards</label>
+        <label class="check" title="Unchecked: TreeX parameters adapted for synthetic clouds"><input id="seg-treex" type="checkbox" checked /> TreeX stock TLS settings</label>
+        <button class="btn primary" id="btn-seg-run">Run segmentation</button>
+        <div class="job-status hidden" id="seg-status">
+          <div class="progress job indeterminate"><div class="bar"></div></div>
+          <div class="job-msg"></div>
+          <div class="job-detail muted"></div>
+        </div>
+        <div id="seg-result" class="muted result-box"></div>
+        <div class="section-title hidden" id="seg-cands-title">Possible split trees <span class="muted" id="seg-cand-count"></span></div>
+        <div id="seg-cands" class="cand-list"></div>
+      </section>
+
+      <section class="pane" id="pane-export">
+        <div id="island-export" class="hidden">
+          <div class="section-title">Island export</div>
+          <label>Output directory (blank = default) <input id="iexp-out" type="text" /></label>
+          <label class="check"><input id="iexp-tiles" type="checkbox" checked /> Per-tile files (<code>_scan.laz</code> + <code>_instances.npy</code>, island-wide IDs)</label>
+          <label class="check"><input id="iexp-focused" type="checkbox" /> Only the focused tree (one LAZ)</label>
+          <p class="muted">Always writes <code>trees.csv</code> (ID, points, tiles, base, height, reviewed).</p>
+          <button class="btn primary" id="btn-iexp-run">Export island</button>
+          <div class="job-status hidden" id="iexp-status">
+            <div class="progress job indeterminate"><div class="bar"></div></div>
+            <div class="job-msg"></div>
+            <div class="job-detail muted"></div>
+          </div>
+          <div id="iexp-result" class="muted result-box"></div>
+          <hr />
+        </div>
+        <div id="single-export">
+          <label>Output directory <input id="out-dir" type="text" /></label>
+          <label>Tile name <input id="out-name" type="text" /></label>
+          <p class="muted">Writes <code>_scan.laz</code>, <code>_instances.npy</code>, <code>_meta.json</code> and a colored <code>_preview.ply</code>. Reviewed tree IDs go into the meta file.</p>
+          <button class="btn primary" id="btn-export">Save tile</button>
+          <div id="export-result" class="muted"></div>
+          <hr />
+          <div class="muted" id="autosave-label"></div>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <div id="modal-root"></div>
+  <div id="toasts"></div>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
