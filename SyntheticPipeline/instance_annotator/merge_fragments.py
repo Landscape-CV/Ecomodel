@@ -29,19 +29,46 @@ MIN_FRAG_PTS = 0     # fragments smaller than this are merged regardless of cont
 AMBIGUOUS = 0.3      # a fragment touching a second host at >= this fraction of the best is left for review
 
 
-def _keys(ijk: np.ndarray) -> np.ndarray:
-    ijk = ijk.astype(np.int64) + (1 << 20)
-    return (ijk[:, 0] << 42) | (ijk[:, 1] << 21) | ijk[:, 2]
+def _pack_xyz(xyz: np.ndarray, voxel: float) -> np.ndarray:
+    """1D voxel code. Column-wise so a large cloud never becomes an (N, 3) int64 index."""
+    v = float(voxel)
+    x = np.floor(np.asarray(xyz[:, 0], dtype=np.float64) / v).astype(np.int64) + (1 << 20)
+    y = np.floor(np.asarray(xyz[:, 1], dtype=np.float64) / v).astype(np.int64) + (1 << 20)
+    z = np.floor(np.asarray(xyz[:, 2], dtype=np.float64) / v).astype(np.int64) + (1 << 20)
+    return (x << 42) | (y << 21) | z
 
 
-def _contacts(ijk: np.ndarray, inv: np.ndarray, n_lab: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Pairs (ia, ib) of label indices touching, contact voxel counts, and per-label voxel footprints."""
-    vox = np.unique(np.stack([_keys(ijk), inv], axis=1), axis=0)
+def sample_indices(xyz: np.ndarray, voxel: float, step: int = 2_000_000) -> np.ndarray:
+    """Index of one point per voxel, computed in slices."""
+    n = int(len(xyz))
+    if n == 0:
+        return np.zeros(0, np.int64)
+    parts = []
+    for s in range(0, n, step):
+        e = min(n, s + step)
+        _, first = np.unique(_pack_xyz(xyz[s:e], voxel), return_index=True)
+        parts.append(first.astype(np.int64, copy=False) + s)
+    idx = parts[0] if len(parts) == 1 else np.concatenate(parts)
+    if len(parts) > 1:
+        _, first = np.unique(_pack_xyz(xyz[idx], voxel), return_index=True)
+        idx = idx[first]
+    return idx
+
+
+def _contacts(keys: np.ndarray, inv: np.ndarray, n_lab: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Pairs (ia, ib) of label indices touching, contact voxel counts, and per-label voxel footprints.
+
+    ``keys`` are packed voxel codes from ``_pack_xyz``. A face neighbour is a shift of one axis,
+    which does not carry into the next bit field for project-local coordinates.
+    """
+    inv = np.asarray(inv, dtype=np.int64)
+    vox = np.unique(np.stack([keys, inv], axis=1), axis=0)
     foot = np.bincount(vox[:, 1], minlength=n_lab)
     vk, vl = vox[:, 0], vox[:, 1]
     codes = []
-    for d in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (-1, 0, 0), (0, -1, 0), (0, 0, -1)):
-        sh = np.unique(np.stack([_keys(ijk + np.array(d)), inv], axis=1), axis=0)
+    for shift in (0, 1 << 42, 1 << 21, 1, -(1 << 42), -(1 << 21), -1):
+        shifted = keys if shift == 0 else keys + shift
+        sh = np.unique(np.stack([shifted, inv], axis=1), axis=0)
         ak, al = sh[:, 0], sh[:, 1]
         left = np.searchsorted(vk, ak, "left")
         cnt = np.searchsorted(vk, ak, "right") - left
@@ -83,8 +110,7 @@ def analyse(xyz: np.ndarray, labels: np.ndarray, *, ground_xyz: Optional[np.ndar
     size = np.bincount(inv, minlength=len(ul))
     cx = np.bincount(inv, weights=xyz[:, 0], minlength=len(ul)) / np.maximum(size, 1)
     cy = np.bincount(inv, weights=xyz[:, 1], minlength=len(ul)) / np.maximum(size, 1)
-    ijk = np.floor(xyz / voxel).astype(np.int64)
-    pk, nc, foot = _contacts(ijk, inv, len(ul))
+    pk, nc, foot = _contacts(_pack_xyz(xyz, voxel), inv, len(ul))
     return {"ids": ul, "has_stem": has_stem, "stem_xy": np.stack([sx, sy], 1), "size": size,
             "centroid": np.stack([cx, cy], 1), "pairs": pk, "contacts": nc, "foot": foot}
 
@@ -161,8 +187,7 @@ def merge_fragments(xyz: np.ndarray, labels: np.ndarray, *, ground_xyz: Optional
     if (labels >= 0).sum() == 0:
         return labels, {"merged": 0, "auto": [], "candidates": []}
     # Analyse a voxel sample: one point per sample_voxel cell keeps contacts and stems intact.
-    keys = np.floor(xyz / sample_voxel).astype(np.int64)
-    _, first = np.unique(_keys(keys), return_index=True)
+    first = sample_indices(xyz, sample_voxel)
     info = analyse(xyz[first], labels[first], ground_xyz=xyz[first] if ground_xyz is None else ground_xyz,
                    voxel=voxel)
     auto, cands = find_merges(info)

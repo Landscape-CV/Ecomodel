@@ -11,7 +11,7 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
-from ..merge_fragments import _keys, analyse, find_merges
+from ..merge_fragments import analyse, find_merges, sample_indices
 from .stitch import apply_candidates, save_candidates
 from .store import Project
 
@@ -19,6 +19,34 @@ BUFFER = 5.0
 SAMPLE_VOXEL = 0.1
 
 Progress = Optional[Callable[[float, float, str], None]]
+
+
+def _sample_box(proj: Project, lo, hi, voxel: float):
+    """One point per voxel inside an xy box, read one octree node at a time.
+
+    A tile crop can be a couple of hundred million points. Voxel codes are built per node, in
+    slices, so the full-resolution cloud is never turned into an (N, 3) int64 index.
+    """
+    lo = np.asarray(lo, np.float32)
+    hi = np.asarray(hi, np.float32)
+    xs, ts, ids = [], [], []
+    for g in proj.nodes_intersecting(lo, hi):
+        xyz, _, idx = proj.read_node(int(g))
+        m = (xyz[:, 0] >= lo[0]) & (xyz[:, 0] <= hi[0]) & (xyz[:, 1] >= lo[1]) & (xyz[:, 1] <= hi[1])
+        if not np.any(m):
+            continue
+        x = xyz[m]
+        keep = sample_indices(x, voxel)
+        xs.append(x[keep])
+        ids.append(idx[m][keep])
+        ts.append(np.full(len(keep), int(proj.node_tile[g]), dtype=np.int16))
+    if not xs:
+        return None
+    xyz = np.concatenate(xs)
+    tile = np.concatenate(ts)
+    ix = np.concatenate(ids)
+    keep = sample_indices(xyz, voxel)
+    return xyz[keep], tile[keep], ix[keep]
 
 
 def find_fragment_candidates(project: Project | str, *, auto_apply: bool = True, progress: Progress = None,
@@ -33,13 +61,11 @@ def find_fragment_candidates(project: Project | str, *, auto_apply: bool = True,
             continue
         prog(t, nt, f"Checking tile {t + 1}/{nt} for split trees")
         lo, hi = proj.tile_bounds_xy(t)
-        crop = proj.crop(lo - BUFFER, hi + BUFFER)
-        if len(crop["idx"]) == 0:
+        sampled = _sample_box(proj, lo - BUFFER, hi + BUFFER, SAMPLE_VOXEL)
+        if sampled is None:
             continue
-        xyz = crop["xyz"].astype(np.float64)
-        _, first = np.unique(_keys(np.floor(xyz / SAMPLE_VOXEL).astype(np.int64)), return_index=True)
-        xyz = xyz[first]
-        lab = proj.gather_labels(crop["tile"][first].astype(np.int64), crop["idx"][first])
+        xyz, tile, ix = sampled
+        lab = proj.gather_labels(tile.astype(np.int64), ix)
         if (lab >= 0).sum() == 0:
             continue
         info = analyse(xyz, lab, ground_xyz=xyz)

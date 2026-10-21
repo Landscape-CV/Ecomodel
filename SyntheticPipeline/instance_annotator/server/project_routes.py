@@ -216,10 +216,13 @@ def region_close():
 @router.post("/island/segment")
 def island_segment(req: IslandSegReq):
     from ..project.segment_island import segment_island
-    from ..segment import METHODS, resolve_pointsam
+    from ..segment import METHODS, resolve_pointsam, unavailable_methods
 
     if req.method not in METHODS:
         return JSONResponse({"error": f"Unknown method {req.method}"}, status_code=400)
+    blocked = unavailable_methods().get(req.method)
+    if blocked:
+        return JSONResponse({"error": blocked}, status_code=400)
     try:
         ckpt = resolve_pointsam(req.pointsam_ckpt) if req.method == "pointsam" else None
     except ValueError as exc:

@@ -279,10 +279,13 @@ def save(req: SaveReq):
 
 @router.post("/segment")
 def segment(req: SegmentReq):
-    from ..segment import METHODS, resolve_pointsam
+    from ..segment import METHODS, resolve_pointsam, unavailable_methods
 
     if req.method not in METHODS:
         return JSONResponse({"error": f"Unknown method {req.method}"}, status_code=400)
+    blocked = unavailable_methods().get(req.method)
+    if blocked:
+        return JSONResponse({"error": blocked}, status_code=400)
     try:
         ckpt = resolve_pointsam(req.pointsam_ckpt)
     except ValueError as exc:
@@ -319,8 +322,8 @@ def job(job_id: str):
 
 @router.get("/methods")
 def methods():
-    from ..segment import METHODS as SEG, pointsam_weights
+    from ..segment import METHODS as SEG, pointsam_weights, unavailable_methods
     from ..wood_leaf import METHODS as WL
 
     return {"segment": list(SEG), "woodleaf": list(WL), "woodleaf_needs_intensity": list(INTENSITY_WOOD_LEAF),
-            "pointsam_weights": pointsam_weights()}
+            "pointsam_weights": pointsam_weights(), "segment_unavailable": unavailable_methods()}

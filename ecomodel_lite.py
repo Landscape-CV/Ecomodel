@@ -24,6 +24,7 @@ from ecomodel_segmenters import (
     SegmenterTLS2trees,
 )
 from ecomodel_promptable_segmenters import SegmenterPointSAM, SegmenterSNAP
+from ecomodel_forestformer import SegmenterForestFormer, SegmenterSegmentAnyTreeV2
 from PyTLidar.Utils.define_input import define_input
 from PyTLidar.TreeQSMSteps.cover_sets import cover_sets
 from PyTLidar.TreeQSMSteps.segments import segments
@@ -265,6 +266,10 @@ class EcomodelLite:
             # RGI semantic stand-in for FSCT; disable when leaf-removal already
             # produced a wood-only cloud (set tls2trees_use_rgi=False).
             self.segmenter = SegmenterTLS2trees(use_rgi_semantic=bool(tls2trees_use_rgi))
+        elif segmenter_type == "forestformer3d":
+            self.segmenter = SegmenterForestFormer()
+        elif segmenter_type == "segmentanytreev2":
+            self.segmenter = SegmenterSegmentAnyTreeV2()
         else:
             self.segmenter = SegmenterScanline()
 
@@ -457,7 +462,7 @@ class EcomodelLite:
             point_cloud, labels = self.segmenter.segment(
                 point_cloud, output_dir=output_dir, prompts=prompts
             )
-        elif self.segmenter_type in ("treex", "tls2trees"):
+        elif self.segmenter_type in ("treex", "tls2trees", "forestformer3d", "segmentanytreev2"):
             point_cloud, labels = self.segmenter.segment(point_cloud, output_dir)
         else:
             point_cloud, labels = self.segmenter.process(point_cloud)

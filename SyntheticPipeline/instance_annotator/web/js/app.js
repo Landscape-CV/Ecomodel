@@ -720,8 +720,8 @@ on("view", () => island.layer.applyView());
   try {
     const m = await getJSON("/api/methods");
     initWoodLeaf(m.woodleaf, runWoodLeaf, m.woodleaf_needs_intensity || []);
-    initSegment(m.segment, m.pointsam_weights, runSegmentation);
-    island.initMethods(m.segment, m.pointsam_weights);
+    initSegment(m.segment, m.pointsam_weights, runSegmentation, m.segment_unavailable);
+    island.initMethods(m.segment, m.pointsam_weights, m.segment_unavailable);
     const ps = await getJSON("/api/project/status");
     if (ps.open) {
       document.body.classList.remove("booting");

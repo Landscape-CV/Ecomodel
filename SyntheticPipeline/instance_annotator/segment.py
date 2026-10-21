@@ -14,7 +14,8 @@ for p in (str(_ROOT), str(_SP_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-METHODS = ("scanline", "treelearn", "treex", "tls2trees", "pointsam")
+METHODS = ("scanline", "treelearn", "treex", "tls2trees", "pointsam",
+           "forestformer3d", "segmentanytreev2")
 
 _DEFAULT_TREELEARN = str(_ROOT / "TreeLearn" / "configs" / "pipeline" / "ecomodel.yaml")
 _STOCK_POINTSAM = str(_ROOT / "thirdparty" / "checkpoints" / "point_sam" / "model.safetensors")
@@ -37,6 +38,14 @@ def pointsam_weights() -> list:
     default = os.path.normcase(os.path.abspath(_DEFAULT_POINTSAM))
     found.sort(key=lambda x: os.path.normcase(os.path.abspath(x[0])) != default)
     return [{"path": p, "label": lab} for p, lab in found]
+
+
+def unavailable_methods() -> Dict[str, str]:
+    """Methods listed in the menu but not runnable. Values are the reason shown in the UI."""
+    from ecomodel_forestformer import segmentanytree_v2_reason
+
+    reason = segmentanytree_v2_reason()
+    return {"segmentanytreev2": reason} if reason else {}
 
 
 def resolve_pointsam(path: Optional[str]) -> Optional[str]:

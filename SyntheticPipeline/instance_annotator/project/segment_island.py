@@ -45,23 +45,37 @@ def method_defaults(method: str) -> Dict[str, float]:
 Progress = Optional[Callable[[float, float, str], None]]
 
 
-def _vox_keys(xyz: np.ndarray, voxel: float, lo: np.ndarray) -> np.ndarray:
-    ijk = np.floor((xyz[:, :3] - lo) / voxel).astype(np.int64)
-    ijk -= ijk.min(axis=0) if len(ijk) else 0
-    dims = ijk.max(axis=0) + 1 if len(ijk) else np.ones(3, np.int64)
-    return (ijk[:, 0] * dims[1] + ijk[:, 1]) * dims[2] + ijk[:, 2]
-
-
 def _abs_keys(xyz: np.ndarray, voxel: float) -> np.ndarray:
-    """Voxel keys comparable across chunks (fixed origin at 0, project-local coords)."""
-    ijk = np.floor(xyz[:, :3] / voxel).astype(np.int64) + (1 << 20)
-    return (ijk[:, 0] << 42) | (ijk[:, 1] << 21) | ijk[:, 2]
+    """Voxel keys comparable across chunks (fixed origin at 0, project-local coords).
+
+    Packed per axis so the index is one int64 per point, not an (N, 3) array.
+    """
+    v = float(voxel)
+    x = np.floor(np.asarray(xyz[:, 0], dtype=np.float64) / v).astype(np.int64) + (1 << 20)
+    y = np.floor(np.asarray(xyz[:, 1], dtype=np.float64) / v).astype(np.int64) + (1 << 20)
+    z = np.floor(np.asarray(xyz[:, 2], dtype=np.float64) / v).astype(np.int64) + (1 << 20)
+    return (x << 42) | (y << 21) | z
+
+
+def _keep_one_per_voxel(xyz: np.ndarray, voxel: float, step: int = 2_000_000) -> np.ndarray:
+    """Index of one point per voxel. Slices so a fat node never allocates an (N, 3) int64 index."""
+    n = int(xyz.shape[0])
+    if n == 0:
+        return np.zeros(0, np.int64)
+    parts = []
+    for s in range(0, n, step):
+        e = min(n, s + step)
+        _, first = np.unique(_abs_keys(xyz[s:e], voxel), return_index=True)
+        parts.append(first.astype(np.int64, copy=False) + s)
+    idx = parts[0] if len(parts) == 1 else np.concatenate(parts)
+    if len(parts) > 1:
+        _, first = np.unique(_abs_keys(xyz[idx], voxel), return_index=True)
+        idx = idx[first]
+    return idx
 
 
 def chunk_seeds(proj: Project, lo: np.ndarray, hi: np.ndarray, voxel: float, max_seeds: int):
     """Voxel-downsampled points (one per voxel) inside an xy box, read node by node."""
-    zlo = float(proj.meta["bmin"][2])
-    lo3 = np.array([lo[0], lo[1], zlo], dtype=np.float64)
     xs, ins = [], []
     lo32, hi32 = lo.astype(np.float32), hi.astype(np.float32)
     for g in proj.nodes_intersecting(lo, hi):
@@ -70,7 +84,7 @@ def chunk_seeds(proj: Project, lo: np.ndarray, hi: np.ndarray, voxel: float, max
         if not m.any():
             continue
         x = xyz[m]
-        _, first = np.unique(_vox_keys(x, voxel, lo3), return_index=True)
+        first = _keep_one_per_voxel(x, voxel)
         xs.append(x[first])
         ins.append(inten[m][first])
     if not xs:
@@ -78,7 +92,7 @@ def chunk_seeds(proj: Project, lo: np.ndarray, hi: np.ndarray, voxel: float, max
     xyz = np.concatenate(xs)
     inten = np.concatenate(ins)
     while True:
-        _, first = np.unique(_vox_keys(xyz, voxel, lo3), return_index=True)
+        first = _keep_one_per_voxel(xyz, voxel)
         xyz, inten = xyz[first], inten[first]
         if len(xyz) <= max_seeds:
             return xyz, inten, voxel

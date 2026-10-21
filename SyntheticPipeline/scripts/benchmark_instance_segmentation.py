@@ -36,11 +36,19 @@ except ImportError:
 
 _SP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ROOT = os.path.dirname(_SP_DIR)
+# Sibling checkout. D:\Projects must be on the path for `import PyTLidar`.
+# D:\Projects\PyTLidar itself is needed for TreeQSMSteps. Both are appended so
+# Ecomodel's ecomodel_lite stays in front of the older copy inside PyTLidar.
+_PROJECTS = os.path.dirname(_ROOT)
+_PYTLIDAR = os.path.join(_PROJECTS, "PyTLidar")
 for p in (_ROOT, _SP_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)
+for p in (_PROJECTS, _PYTLIDAR):
+    if os.path.isdir(p) and p not in sys.path:
+        sys.path.append(p)
 
-from evaluation.instance_metrics import match_instances, pairwise_iou_matrix
+from evaluation.instance_metrics import match_instances, pairwise_overlap
 from promptable_instance import oracle_stem_prompts
 
 
@@ -357,6 +365,22 @@ def run_segmenter_on_tile(
     return work, labels.astype(np.int32), orig_indices
 
 
+def drop_unlabeled_predictions(gt: np.ndarray, pred: np.ndarray) -> Tuple[np.ndarray, int]:
+    """Drop predicted trees whose points are mostly unlabelled (gt == -1)."""
+    pred = np.asarray(pred, dtype=np.int32).copy()
+    ids, inv = np.unique(pred, return_inverse=True)
+    counts = np.bincount(inv)
+    unl = np.bincount(inv, weights=(gt < 0).astype(np.float64)) / counts
+    drop = (ids >= 0) & (unl > 0.5)
+    pred[drop[inv]] = -1
+    return pred, int(drop.sum())
+
+
+def pointsam_weight_tag(ckpt: str) -> str:
+    parent = os.path.basename(os.path.dirname(os.path.abspath(ckpt))) if ckpt else ""
+    return "stock" if parent in ("", "point_sam") else parent
+
+
 def evaluate_tile(
     tile_prefix: str,
     algorithms: List[str],
@@ -366,6 +390,7 @@ def evaluate_tile(
     ckpt_kwargs: Dict,
     save_predictions: bool = False,
     pred_dir: Optional[str] = None,
+    ignore_unlabeled: bool = False,
 ) -> List[Dict]:
     laz_path = tile_prefix + "_scan.laz"
     gt_path = tile_prefix + "_instances.npy"
@@ -405,6 +430,7 @@ def evaluate_tile(
                 **ckpt_kwargs,
             )
         except Exception as e:
+            print(f"  [{alg}] {tile_name}: FAILED {e}")
             rows.append({
                 "tile": tile_name,
                 "algorithm": alg,
@@ -432,8 +458,14 @@ def evaluate_tile(
 
         gt_sub = gt_full[orig_idx]
         eval_mask = gt_sub >= 0
-        iou, _, _ = pairwise_iou_matrix(gt_sub, pred_ids)
-        metrics = match_instances(iou, iou_thresh=iou_thresh)
+        pred_ignored = 0
+        scored = pred_ids
+        if ignore_unlabeled:
+            scored, pred_ignored = drop_unlabeled_predictions(gt_sub, pred_ids)
+        iou, _, _, inter, gt_counts, pred_counts = pairwise_overlap(gt_sub, scored)
+        metrics = match_instances(
+            iou, iou_thresh=iou_thresh, inter=inter, gt_counts=gt_counts, pred_counts=pred_counts,
+        )
 
         pred_paths = {}
         if save_predictions and pred_dir:
@@ -464,14 +496,20 @@ def evaluate_tile(
             "iou_thresh": iou_thresh,
             "duration_sec": time.time() - t0,
             "error": "",
+            "weights": pointsam_weight_tag(ckpt_kwargs.get("pointsam_ckpt", "")) if alg.startswith("pointsam") else "",
+            "pred_ignored": pred_ignored,
             "pred_laz": pred_paths.get("laz", ""),
             **metrics,
         }
         rows.append(row)
+        weight_tag = ""
+        if alg.startswith("pointsam"):
+            weight_tag = f" [{pointsam_weight_tag(ckpt_kwargs.get('pointsam_ckpt', ''))}]"
         print(
-            f"  [{alg}] {tile_name}: F1={metrics['f1']:.3f} "
+            f"  [{alg}{weight_tag}] {tile_name}: F1={metrics['f1']:.3f} "
             f"P={metrics['precision']:.3f} R={metrics['recall']:.3f} "
-            f"PQ={metrics['pq']:.3f} (TP={metrics['tp']} FP={metrics['fp']} FN={metrics['fn']})"
+            f"PQ={metrics['pq']:.3f} treeF1={metrics['tree_f1']:.3f} "
+            f"(TP={metrics['tp']} FP={metrics['fp']} FN={metrics['fn']})"
         )
     return rows
 
@@ -480,28 +518,51 @@ def summarize(df: pd.DataFrame) -> pd.DataFrame:
     ok = df[df["error"].fillna("") == ""].copy()
     if ok.empty:
         return ok
-    group_cols = ["algorithm", "prompt_mode", "density_class", "composition"]
+    group_cols = ["algorithm", "weights", "prompt_mode", "density_class", "composition"]
     group_cols = [c for c in group_cols if c in ok.columns]
-    metric_cols = ["precision", "recall", "f1", "pq", "sq", "rq", "mean_matched_iou", "tp", "fp", "fn"]
+    metric_cols = [
+        "precision", "recall", "f1", "pq", "sq", "rq", "mean_matched_iou",
+        "tree_precision", "tree_recall", "tree_f1", "tree_iou", "tp", "fp", "fn",
+    ]
     present = [c for c in metric_cols if c in ok.columns]
     return ok.groupby(group_cols, dropna=False)[present].mean().reset_index()
+
+
+def _markdown_table(summary: pd.DataFrame, cols: list) -> str:
+    present = [c for c in cols if c in summary.columns]
+    numeric = {"precision", "recall", "f1", "pq", "tree_precision", "tree_recall", "tree_f1", "tree_iou"}
+    header = "| " + " | ".join(present) + " |"
+    sep = "| " + " | ".join(["---"] * len(present)) + " |"
+    lines = [header, sep]
+    for _, row in summary.iterrows():
+        cells = []
+        for c in present:
+            v = row[c]
+            if c in numeric:
+                cells.append(f"{float(v):.3f}" if pd.notna(v) else "")
+            elif pd.isna(v):
+                cells.append("")
+            else:
+                cells.append(str(v))
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n"
 
 
 def summary_to_markdown(summary: pd.DataFrame) -> str:
     if summary.empty:
         return "_No successful rows._\n"
-    cols = [c for c in ["algorithm", "prompt_mode", "density_class", "composition",
-                        "precision", "recall", "f1", "pq"] if c in summary.columns]
-    sub = summary[cols].copy()
-    for c in ["precision", "recall", "f1", "pq"]:
-        if c in sub.columns:
-            sub[c] = sub[c].map(lambda x: f"{float(x):.3f}")
-    header = "| " + " | ".join(cols) + " |"
-    sep = "| " + " | ".join(["---"] * len(cols)) + " |"
-    lines = [header, sep]
-    for _, row in sub.iterrows():
-        lines.append("| " + " | ".join(str(row[c]) for c in cols) + " |")
-    return "\n".join(lines) + "\n"
+    id_cols = ["algorithm", "weights", "prompt_mode", "density_class", "composition"]
+    plot = _markdown_table(summary, id_cols + ["precision", "recall", "f1", "pq"])
+    tree_cols = ["tree_precision", "tree_recall", "tree_f1", "tree_iou"]
+    if not any(c in summary.columns for c in tree_cols):
+        return plot
+    tree = _markdown_table(summary, id_cols + tree_cols)
+    return (
+        plot
+        + "\nTree-level means over matched trees only (point IoU at least 0.5). "
+        + "A high plot-level precision can still hide a bloated match.\n\n"
+        + tree
+    )
 
 
 def main():
@@ -514,7 +575,7 @@ def main():
         "--algorithms",
         type=str,
         default="scanline,pointsam,snap",
-        help="Comma-separated: scanline,treelearn,pointsam,snap,treex,tls2trees",
+        help="Comma-separated: scanline,treelearn,pointsam,snap,treex,tls2trees,forestformer3d,segmentanytreev2",
     )
     parser.add_argument(
         "--prompt_mode",
@@ -524,6 +585,17 @@ def main():
         help="For pointsam/snap: automatic seeds, GT-oracle clicks, or both",
     )
     parser.add_argument("--iou_thresh", type=float, default=0.5)
+    parser.add_argument(
+        "--ignore_unlabeled",
+        action="store_true",
+        help="Partially labelled tiles: drop predicted trees with >50%% of points on unlabelled (-1) GT",
+    )
+    parser.add_argument(
+        "--segmentanytree_v2_ckpt",
+        type=str,
+        default=os.environ.get("SEGMENTANYTREE_V2_CKPT", ""),
+        help="Local SegmentAnyTreeV2 checkpoint. With no file, the method is skipped.",
+    )
     parser.add_argument("--treelearn_config", type=str,
                         default=os.path.join(_ROOT, "TreeLearn", "configs", "pipeline", "ecomodel.yaml"))
     parser.add_argument("--no_treelearn_gpu", action="store_true")
@@ -628,6 +700,13 @@ def main():
         except Exception as exc:
             print(f"WARNING: tls2trees init failed ({exc}); skipping tls2trees")
             base_algs = [a for a in base_algs if a != "tls2trees"]
+    if "segmentanytreev2" in base_algs:
+        sat_ckpt = args.segmentanytree_v2_ckpt
+        if not sat_ckpt or not os.path.isfile(sat_ckpt):
+            print("[bench] segmentanytreev2 skipped: no checkpoint (SEGMENTANYTREE_V2_CKPT). Weights are not published.")
+            base_algs = [a for a in base_algs if a != "segmentanytreev2"]
+        else:
+            os.environ["SEGMENTANYTREE_V2_CKPT"] = sat_ckpt
 
     algorithms = expand_algorithms(base_algs, args.prompt_mode)
     if not algorithms:
@@ -681,6 +760,7 @@ def main():
                 ckpt_kwargs=ckpt_kwargs,
                 save_predictions=args.save_predictions,
                 pred_dir=args.pred_dir if args.save_predictions else None,
+                ignore_unlabeled=args.ignore_unlabeled,
             )
         )
 
@@ -696,7 +776,24 @@ def main():
     print(f"Wrote {summary_path}")
 
     md_path = out_csv.with_name(out_csv.stem + "_summary.md")
-    md_path.write_text(summary_to_markdown(summary), encoding="utf-8")
+    notes = [
+        "",
+        "Plot-level precision, recall and F1 count trees matched at IoU 0.5.",
+        "Tree-level precision, recall, F1 and IoU average the point scores of those matched trees only.",
+    ]
+    if args.ignore_unlabeled:
+        notes.append(
+            "Predicted trees with more than half their points on unlabelled reference points are ignored."
+        )
+    if any(a.startswith("pointsam") for a in algorithms):
+        notes.append(
+            f"Point-SAM weights: `{args.pointsam_ckpt}` ({pointsam_weight_tag(args.pointsam_ckpt)})."
+        )
+    failed = df[df["error"].fillna("").astype(str).str.strip() != ""] if "error" in df.columns else df.iloc[0:0]
+    if not failed.empty:
+        for alg, sub in failed.groupby("algorithm"):
+            notes.append(f"{alg} failed on {len(sub)} tile(s): {sub['error'].iloc[0]}")
+    md_path.write_text(summary_to_markdown(summary) + "\n".join(notes) + "\n", encoding="utf-8")
     print(f"Wrote {md_path}")
 
     if not summary.empty:

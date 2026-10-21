@@ -83,6 +83,11 @@ thirdparty/pointtree/**
 !thirdparty/pointtree/
 !thirdparty/pointtree/INSTALL_ECOMODEL.md
 
+# ForestFormer3D inference wrapper (clone locally; keep the install note)
+thirdparty/ForestFormer3D/**
+!thirdparty/ForestFormer3D/
+!thirdparty/ForestFormer3D/INSTALL_ECOMODEL.md
+
 # Real TLS/MLS downloads + prepared tiles (large binaries)
 SyntheticPipeline/testdataset/real_raw/**
 !SyntheticPipeline/testdataset/real_raw/

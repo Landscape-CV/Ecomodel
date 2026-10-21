@@ -15,9 +15,15 @@ from pathlib import Path
 
 _SP_DIR = Path(__file__).resolve().parents[2]
 _ROOT = _SP_DIR.parent
+# Sibling checkout: D:\Projects\PyTLidar is the PyTLidar package, so its parent must be on the path.
+_PROJECTS = _ROOT.parent
+_PYTLIDAR = _PROJECTS / "PyTLidar"
 for p in (str(_ROOT), str(_SP_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
+for p in (str(_PROJECTS), str(_PYTLIDAR)):
+    if Path(p).is_dir() and p not in sys.path:
+        sys.path.append(p)
 
 from fastapi import FastAPI  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402

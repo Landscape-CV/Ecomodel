@@ -235,10 +235,21 @@ export function initPointSamSelect(psSel, methodSel, weights) {
   return () => (methodSel.value === "pointsam" && psSel.value) || null;
 }
 
-export function initSegment(methods, weights, run) {
+function fillMethods(sel, methods, unavailable) {
+  sel.replaceChildren(...methods.map((m) => {
+    const reason = unavailable?.[m];
+    const opt = el("option", { value: m, text: reason ? `${m} (unavailable)` : m, title: reason || m });
+    if (reason) opt.disabled = true;
+    return opt;
+  }));
+  const preferred = [...sel.options].find((o) => o.value === "treelearn" && !o.disabled)
+    || [...sel.options].find((o) => !o.disabled);
+  if (preferred) sel.value = preferred.value;
+}
+
+export function initSegment(methods, weights, run, unavailable) {
   const sel = $("seg-method");
-  sel.replaceChildren(...methods.map((m) => el("option", { value: m, text: m })));
-  if (methods.includes("treelearn")) sel.value = "treelearn";
+  fillMethods(sel, methods, unavailable);
   const syncOptions = () => $("seg-treex").closest("label").classList.toggle("hidden", sel.value !== "treex");
   sel.addEventListener("change", syncOptions);
   syncOptions();

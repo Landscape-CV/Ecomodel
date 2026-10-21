@@ -38,7 +38,7 @@ for p in (str(_ROOT), str(_SP), str(_SP / "scripts")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from evaluation.instance_metrics import match_instances, pairwise_iou_matrix  # noqa: E402
+from evaluation.instance_metrics import match_instances, pairwise_overlap  # noqa: E402
 from promptable_instance import (  # noqa: E402
     auto_stem_grid_prompts,
     oracle_stem_prompts,
@@ -155,8 +155,10 @@ def score(gt: np.ndarray, pred: np.ndarray, iou_thresh: float, ignore_unlabeled:
         drop = (ids >= 0) & (unl > 0.5)
         pred[drop[inv]] = -1
         out["pred_ignored"] = int(drop.sum())
-    iou, _, _ = pairwise_iou_matrix(gt, pred)
-    out.update(match_instances(iou, iou_thresh=iou_thresh))
+    iou, _, _, inter, gt_counts, pred_counts = pairwise_overlap(gt, pred)
+    out.update(match_instances(
+        iou, iou_thresh=iou_thresh, inter=inter, gt_counts=gt_counts, pred_counts=pred_counts,
+    ))
     return out
 
 
@@ -275,6 +277,7 @@ def main():
     res = out_dir / "results.csv"
     df.to_csv(res, mode="a", header=not res.exists(), index=False)
     agg_cols = [c for c in ["f1", "precision", "recall", "pq", "mean_matched_iou",
+                            "tree_precision", "tree_recall", "tree_f1", "tree_iou",
                             "click_recall", "click_precision", "click_dup", "pred_ignored", "fragments_merged",
                             "duration_sec"] if c in df.columns]
     df["hard"] = df["density_class"].isin(["dense", "extreme"])

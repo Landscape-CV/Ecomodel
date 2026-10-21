@@ -6,7 +6,7 @@ import trimesh
 
 from synthetic_tls.assemble.forest_assembler import ForestAssembler
 from synthetic_tls.constants import GROUND_INSTANCE_ID
-from evaluation.instance_metrics import match_instances, pairwise_iou_matrix
+from evaluation.instance_metrics import match_instances, pairwise_iou_matrix, pairwise_overlap
 
 
 def _write_dummy_tree(asset_dir, stem: str, tree_id_hint: int = 0):
@@ -91,26 +91,48 @@ def test_assembler_mono_species_filter(tmp_path):
 def test_hungarian_instance_metrics_perfect():
     gt = np.array([0, 0, 0, 1, 1, 1, -1, -1], dtype=np.int32)
     pred = gt.copy()
-    iou, gt_ids, pred_ids = pairwise_iou_matrix(gt, pred)
+    iou, gt_ids, pred_ids, inter, gt_counts, pred_counts = pairwise_overlap(gt, pred)
     assert list(gt_ids) == [0, 1]
     assert list(pred_ids) == [0, 1]
-    metrics = match_instances(iou, iou_thresh=0.5)
+    metrics = match_instances(iou, iou_thresh=0.5, inter=inter, gt_counts=gt_counts, pred_counts=pred_counts)
     assert metrics["tp"] == 2
     assert metrics["fp"] == 0
     assert metrics["fn"] == 0
     assert metrics["f1"] == pytest.approx(1.0)
     assert metrics["pq"] == pytest.approx(1.0)
+    assert metrics["tree_f1"] == pytest.approx(1.0)
+    assert metrics["tree_precision"] == pytest.approx(1.0)
+    assert metrics["tree_recall"] == pytest.approx(1.0)
+    assert metrics["tree_iou"] == pytest.approx(1.0)
 
 
 def test_hungarian_instance_metrics_split_merge():
     gt = np.array([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int32)
     pred = np.array([0, 0, 0, 0, 0, 0, 0, 0], dtype=np.int32)
-    iou, _, _ = pairwise_iou_matrix(gt, pred)
-    metrics = match_instances(iou, iou_thresh=0.5)
+    iou, _, _, inter, gt_counts, pred_counts = pairwise_overlap(gt, pred)
+    metrics = match_instances(
+        iou, iou_thresh=0.5, inter=inter, gt_counts=gt_counts, pred_counts=pred_counts,
+    )
     assert metrics["num_gt"] == 2
     assert metrics["num_pred"] == 1
-    assert metrics["tp"] + metrics["fn"] == 2
-    assert metrics["fp"] + metrics["tp"] == 1
+    assert metrics["tp"] == 1
+    assert metrics["fn"] == 1
+    assert metrics["fp"] == 0
+    # Plot-level precision is 1: the one prediction matched a tree.
+    # Tree-level precision is 0.5: half of that prediction belongs to the other tree.
+    assert metrics["precision"] == pytest.approx(1.0)
+    assert metrics["tree_precision"] == pytest.approx(0.5)
+    assert metrics["tree_recall"] == pytest.approx(1.0)
+    assert metrics["tree_f1"] == pytest.approx(2 / 3)
+    assert metrics["tree_iou"] == pytest.approx(0.5)
+
+
+def test_pairwise_iou_matrix_still_returns_three():
+    gt = np.array([0, 0, 1, 1], dtype=np.int32)
+    iou, gt_ids, pred_ids = pairwise_iou_matrix(gt, gt.copy())
+    assert iou.shape == (2, 2)
+    assert list(gt_ids) == [0, 1]
+    assert list(pred_ids) == [0, 1]
 
 
 def test_smoke_config_exists():
